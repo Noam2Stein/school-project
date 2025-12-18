@@ -15,5 +15,6 @@ class Email:
     def __repr__(self):
         return f"Email(\"{self._string}\")"
 
+    @property
     def string(self) -> str:
         return self._string
