@@ -48,23 +48,22 @@ item_id2 = uuid4()
 item1 = Item(
     auth_key=Key(120486734908862309468730984),
     contents=b"esrguhjolesryhiioluhsresiolyeyrsesrytuiolioleyurioluesyrtesrtui",
+    release_keys=[ReleaseKey(
+        key=b"esyrgiouhio3uhio4hafsiouhi456wuhszdhfgiouhw45tiosdfgesrtg",
+        expires=datetime.now(),
+    )],
 )
 item2 = Item(
     auth_key=Key(34278934567890456709834567),
     contents=b"eiorguiluhj34567hjiouhsgdiuh3456iouhrtgesesrg",
+    release_keys=[ReleaseKey(
+        key=b"sdfghioj45e6yiojpesrge45yjiorsdtheshrtge45yioey45rij4we5iohjesriot",
+        expires=datetime.now(),
+    )],
 )
 
 release_key_id1 = uuid4()
 release_key_id2 = uuid4()
-
-release_key1 = ReleaseKey(
-    key=b"esyrgiouhio3uhio4hafsiouhi456wuhszdhfgiouhw45tiosdfgesrtg",
-    expires=datetime.now(),
-)
-release_key2 = ReleaseKey(
-    key=b"sdfghioj45e6yiojpesrge45yjiorsdtheshrtge45yioey45rij4we5iohjesriot",
-    expires=datetime.now(),
-)
 
 db.insert_user(user_email1, user1, False)
 assert_panic(lambda: db.insert_user(user_email1, user1, False))
@@ -93,17 +92,3 @@ db.insert_item(item_id2, item1, True)
 assert_eq(db.get_item(item_id2), item1)
 db.insert_item(item_id2, item2, True)
 assert_eq(db.get_item(item_id2), item2)
-
-db.insert_release_key(release_key_id1, release_key1, False)
-assert_panic(lambda: db.insert_release_key(release_key_id1, release_key1, False))
-db.insert_release_key(release_key_id1, release_key1, True)
-assert_eq(db.get_release_key(release_key_id1), release_key1)
-db.insert_release_key(release_key_id1, release_key2, True)
-assert_eq(db.get_release_key(release_key_id1), release_key2)
-
-db.insert_release_key(release_key_id2, release_key1, False)
-assert_panic(lambda: db.insert_release_key(release_key_id2, release_key1, False))
-db.insert_release_key(release_key_id2, release_key1, True)
-assert_eq(db.get_release_key(release_key_id2), release_key1)
-db.insert_release_key(release_key_id2, release_key2, True)
-assert_eq(db.get_release_key(release_key_id2), release_key2)

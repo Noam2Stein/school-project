@@ -16,14 +16,15 @@ class User:
     messages: list[bytes]
 
 @dataclass
-class Item:
-    auth_key: Key
-    contents: bytes
-
-@dataclass
 class ReleaseKey:
     key: bytes
     expires: datetime
+
+@dataclass
+class Item:
+    auth_key: Key
+    contents: bytes
+    release_keys: list[ReleaseKey]
 
 class Database:
     def __init__(self, data_dir: str):
@@ -55,16 +56,8 @@ class Database:
                 CREATE TABLE items (
                     id TEXT PRIMARY KEY,
                     auth_key BLOB,
-                    contents BLOB
-                );
-                """
-            )
-            self._cursor.execute(
-                """
-                CREATE TABLE release_keys (
-                    id TEXT PRIMARY KEY,
-                    key BLOB,
-                    expires TEXT
+                    contents BLOB,
+                    release_keys BLOB
                 );
                 """
             )
@@ -114,37 +107,13 @@ class Database:
             
             self._cursor.execute(
                 """
-                INSERT OR REPLACE INTO items (id, auth_key, contents) VALUES (?, ?, ?)
+                INSERT OR REPLACE INTO items (id, auth_key, contents, release_keys) VALUES (?, ?, ?, ?)
                 """,
                 (
                     id.bytes,
                     value.auth_key.value.to_bytes(32),
                     value.contents,
-                ),
-            )
-            self._conn.commit()
-
-    def insert_release_key(self, id: Uuid, value: ReleaseKey, should_already_exist: bool):
-        with self._lock:
-            self._cursor.execute(
-                """
-                SELECT key FROM release_keys WHERE id = ?
-                """,
-                (id.bytes,),
-            )
-            if should_already_exist and self._cursor.fetchone() is None:
-                raise Exception("release key {id} doesn't exist")
-            elif not should_already_exist and self._cursor.fetchone() is not None:
-                raise Exception("release key {id} already exists")
-            
-            self._cursor.execute(
-                """
-                INSERT OR REPLACE INTO release_keys (id, key, expires) VALUES (?, ?, ?)
-                """,
-                (
-                    id.bytes,
-                    value.key,
-                    value.expires.isoformat(),
+                    pickle.dumps(value.release_keys),
                 ),
             )
             self._conn.commit()
@@ -172,7 +141,7 @@ class Database:
         with self._lock:
             self._cursor.execute(
                 """
-                SELECT auth_key, contents FROM items WHERE id = ?
+                SELECT auth_key, contents, release_keys FROM items WHERE id = ?
                 """,
                 (id.bytes,),
             )
@@ -183,23 +152,7 @@ class Database:
             return Item(
                 auth_key=Key(int.from_bytes(value["auth_key"])),
                 contents=value["contents"],
-            )
-        
-    def get_release_key(self, id: Uuid) -> ReleaseKey:
-        with self._lock:
-            self._cursor.execute(
-                """
-                SELECT key, expires FROM release_keys WHERE id = ?
-                """,
-                (id.bytes,),
-            )
-            value = self._cursor.fetchone()
-            if value is None:
-                raise Exception("release key {id} doesn't exist")
-            
-            return ReleaseKey(
-                key=value["key"],
-                expires=datetime.fromisoformat(value["expires"]),
+                release_keys=pickle.loads(value["release_keys"]),
             )
 
     def remove_user(self, email: Email):
@@ -217,16 +170,6 @@ class Database:
             self._cursor.execute(
                 """
                 DELETE FROM items WHERE id = ?
-                """,
-                (id.bytes,),
-            )
-            self._conn.commit()
-
-    def remove_release_key(self, id: Uuid):
-        with self._lock:
-            self._cursor.execute(
-                """
-                DELETE FROM release_keys WHERE id = ?
                 """,
                 (id.bytes,),
             )
