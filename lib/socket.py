@@ -26,6 +26,9 @@ class RawConnection:
         self._recv_buf = bytearray()
         self._recv_list = []
 
+    def has_input(self) -> bool:
+        return select([self._socket], [], [], 0)[0]
+
     def recv_raw(self) -> bytes | None:
         there_is_input = select([self._socket], [], [], 0)[0]
         if there_is_input:
