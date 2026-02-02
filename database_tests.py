@@ -34,12 +34,14 @@ user1 = User(
     items=b"riorjgiognert9y45y6897457ytgmc0456yt45",
     public_key=Key(3457890345780347089465),
     messages=[b"gerijgterio", b"helloworld"],
+    description="The first user used for the test",
 )
 user2 = User(
     auth_key=Key(7568904508934560893456),
     items=b"rtnu7g6y456764bvo675y0e640",
     public_key=Key(34507894563787045670893456),
     messages=[b"eryuiodffgnjkldcvn", b"ghghghghgh"],
+    description="The second user used for the test",
 )
 
 item_id1 = uuid4()

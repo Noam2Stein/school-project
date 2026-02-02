@@ -14,6 +14,7 @@ class User:
     items: bytes
     public_key: Key
     messages: list[bytes]
+    description: str
 
 @dataclass
 class ReleaseKey:
@@ -33,6 +34,7 @@ class Database:
         sqlite_path = f"{self._data_dir}/.sqlite"
         self._conn = sqlite3.connect(sqlite_path)
         self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA foreign_keys = ON;")
         self._cursor = self._conn.cursor()
 
         is_new_database = not self._cursor.execute(
@@ -61,6 +63,14 @@ class Database:
                 );
                 """
             )
+            self._cursor.execute(
+                """
+                CREATE TABLE user_descriptions (
+                    email TEXT PRIMARY KEY REFERENCES users(email) ON DELETE CASCADE,
+                    description TEXT
+                );
+                """
+            )
             self._conn.commit()
 
         self._lock = Lock()
@@ -74,9 +84,9 @@ class Database:
                 (email.string,),
             )
             if should_already_exist and self._cursor.fetchone() is None:
-                raise Exception("user {email} doesn't exist")
+                raise Exception(f"user {email} doesn't exist")
             elif not should_already_exist and self._cursor.fetchone() is not None:
-                raise Exception("user {email} already exists")
+                raise Exception(f"user {email} already exists")
             
             self._cursor.execute(
                 """
@@ -90,6 +100,15 @@ class Database:
                     pickle.dumps(value.messages),
                 ),
             )
+            self._cursor.execute(
+                """
+                INSERT OR REPLACE INTO user_descriptions (email, description) VALUES (?, ?)
+                """,
+                (
+                    email.string,
+                    value.description,
+                ),
+            )
             self._conn.commit()
 
     def insert_item(self, id: Uuid, value: Item, should_already_exist: bool):
@@ -101,9 +120,9 @@ class Database:
                 (id.bytes,),
             )
             if should_already_exist and self._cursor.fetchone() is None:
-                raise Exception("item {id} doesn't exist")
+                raise Exception(f"item {id} doesn't exist")
             elif not should_already_exist and self._cursor.fetchone() is not None:
-                raise Exception("item {id} already exists")
+                raise Exception(f"item {id} already exists")
             
             self._cursor.execute(
                 """
@@ -128,13 +147,22 @@ class Database:
             )
             value = self._cursor.fetchone()
             if value is None:
-                raise Exception("user {email} doesn't exist")
+                raise Exception(f"user {email} doesn't exist")
+
+            self._cursor.execute(
+                """
+                SELECT description FROM user_descriptions WHERE email = ?
+                """,
+                (email.string,),
+            )
+            description_value = self._cursor.fetchone()
 
             return User(
                 auth_key=Key(int.from_bytes(value["auth_key"])),
                 items=value["items"],
                 public_key=Key(int.from_bytes(value["public_key"])),
                 messages=pickle.loads(value["messages"]),
+                description=description_value["description"],
             )
         
     def get_item(self, id: Uuid) -> Item:
@@ -147,7 +175,7 @@ class Database:
             )
             value = self._cursor.fetchone()
             if value is None:
-                raise Exception("item {id} doesn't exist")
+                raise Exception(f"item {id} doesn't exist")
             
             return Item(
                 auth_key=Key(int.from_bytes(value["auth_key"])),
