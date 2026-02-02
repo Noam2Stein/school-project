@@ -6,8 +6,6 @@ TODO:
 
 - expand database abstraction to please teacher.
 
-- expand socket abstraction to cover socket initialization for clients and servers.
-
 - create the main loop of the server with good enough thread spawning maybe using a thread pool.
 
 - plan all features and their required request & response types.
