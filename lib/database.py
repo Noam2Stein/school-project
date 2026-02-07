@@ -8,25 +8,58 @@ from uuid import UUID as Uuid
 from lib.key import Key
 from lib.email import Email
 
+# Information stored about each user in the database. This type only contains
+# data and is not a database handle.
 @dataclass
 class User:
+    # This is the result of a key derived from the user's password which is
+    # encrypted once on the client then encrytped again on the server. If the
+    # client has given a key that results in this, they are authenticated to
+    # access the user's account.
     auth_key: Key
-    items: bytes
+    # Information private to the user. This is in encrypted form and the format
+    # is only specified in client code.
+    private_info: bytes
+    # The public key used to send messages to the user.
     public_key: Key
+    # A list of messages sent to the user that were encryted using `public_key`.
     messages: list[bytes]
+    # A publicly available description of the user so that my sql databse uses
+    # foreign keys (the teacher asked for it).
     description: str
 
+# A release key is a piece of information that can be used to release a single
+# lock on an item (a lock that was enabled by one of the users). The information
+# is encrypted and the format is only specified in client code. This type only
+# contains data and is not a database handle.
 @dataclass
 class ReleaseKey:
-    key: bytes
+    # the stored information that clients can request.
+    info: bytes
+    # a certain time where the key should be deleted by the server. This is
+    # something the client can request from the server to set up.
     expires: datetime
 
+# an item is a piece of information encrypted by a group of users. The server
+# doesn't know what users relate to which items. This type only contains data
+# and is not a database handle.
 @dataclass
 class Item:
+    # a key that is used to ensure that a client has permission to an item. Its
+    # the client's job to give this key each time they want to access the item,
+    # after that the key they sent should be encrypted once then compared with
+    # this one. The origin of the key is not speficied here.
     auth_key: Key
+    # the encrypted contents of the item. The format of this is only specified
+    # in client code. Its important to remember that this piece of information
+    # may be very large (a large encrpted file for example).
     contents: bytes
+    # a list of the item's release keys (read the docs for `ReleaseKey`).
     release_keys: list[ReleaseKey]
 
+# A handle to the database. Do not create multiple instances of this type at the
+# same time. You can safely call methods of this type from multiple threads at
+# the same time.
 class Database:
     def __init__(self, data_dir: str):
         self._data_dir = data_dir
@@ -47,7 +80,7 @@ class Database:
                 CREATE TABLE users (
                     email TEXT PRIMARY KEY,
                     auth_key BLOB,
-                    items BLOB,
+                    private_info BLOB,
                     public_key BLOB,
                     messages BLOB
                 );
@@ -75,6 +108,9 @@ class Database:
 
         self._lock = Lock()
     
+    # creates a user. If this function fails (user should already exist but
+    # doesn't, or the opposite) the database is kept as it was before and the
+    # function panics.
     def insert_user(self, email: Email, value: User, should_already_exist: bool):
         with self._lock:
             self._cursor.execute(
@@ -90,12 +126,12 @@ class Database:
             
             self._cursor.execute(
                 """
-                INSERT OR REPLACE INTO users (email, auth_key, items, public_key, messages) VALUES (?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO users (email, auth_key, private_info, public_key, messages) VALUES (?, ?, ?, ?, ?)
                 """,
                 (
                     email.string,
                     value.auth_key.value.to_bytes(32),
-                    value.items,
+                    value.private_info,
                     value.public_key.value.to_bytes(32),
                     pickle.dumps(value.messages),
                 ),
@@ -111,6 +147,9 @@ class Database:
             )
             self._conn.commit()
 
+    # inserts an "item". If this function fails (item should already exist but
+    # doesn't, or the opposite) the database is kept as it was before and the
+    # function panics.
     def insert_item(self, id: Uuid, value: Item, should_already_exist: bool):
         with self._lock:
             self._cursor.execute(
@@ -137,6 +176,8 @@ class Database:
             )
             self._conn.commit()
     
+    # Returns information stored about a user. If this function panics you can
+    # guess that the user doesn't exist.
     def get_user(self, email: Email) -> User:
         with self._lock:
             self._cursor.execute(
@@ -164,7 +205,11 @@ class Database:
                 messages=pickle.loads(value["messages"]),
                 description=description_value["description"],
             )
-        
+    
+    # Returns information stored about an item. If this function panics, the
+    # item doesn't exist. The result of this function contains the actual data
+    # of the item, which may be megabytes long. To exclude the actual item data,
+    # use `get_item_metadata`.
     def get_item(self, id: Uuid) -> Item:
         with self._lock:
             self._cursor.execute(
@@ -183,6 +228,29 @@ class Database:
                 release_keys=pickle.loads(value["release_keys"]),
             )
 
+    # Returns information stored about an item excluding the contents. If this
+    # function panics, the item doesn't exist. "contents" are the actual data
+    # of the item which may be megabytes long.
+    def get_item_metadata(self, id: Uuid) -> Item:
+        with self._lock:
+            self._cursor.execute(
+                """
+                SELECT auth_key, release_keys FROM items WHERE id = ?
+                """,
+                (id.bytes,),
+            )
+            value = self._cursor.fetchone()
+            if value is None:
+                raise Exception(f"item {id} doesn't exist")
+            
+            return Item(
+                auth_key=Key(int.from_bytes(value["auth_key"])),
+                contents=bytes(),
+                release_keys=pickle.loads(value["release_keys"]),
+            )
+
+    # Removes the info about a user from the database. This function does not
+    # panic if the user doesn't exist.
     def remove_user(self, email: Email):
         with self._lock:
             self._cursor.execute(
@@ -193,6 +261,8 @@ class Database:
             )
             self._conn.commit()
     
+    # Removes info about an item from the database. This function does not
+    # panic if the item doesn't exist.
     def remove_item(self, id: Uuid):
         with self._lock:
             self._cursor.execute(
