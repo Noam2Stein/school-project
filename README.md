@@ -4,9 +4,7 @@ This is a school project i am forced to make.
 
 TODO:
 
-- plan all features and their required request & response types.
-
-- implement all request response types and make server ready for request handling.
+- handle requests.
 
 - test server using dummy client code and refactor to please teacher.
 

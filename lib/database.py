@@ -47,8 +47,7 @@ class ReleaseKey:
 class Item:
     # a key that is used to ensure that a client has permission to an item. Its
     # the client's job to give this key each time they want to access the item,
-    # after that the key they sent should be encrypted once then compared with
-    # this one. The origin of the key is not speficied here.
+    # then the server hashes it and compared it to this key from the database.
     auth_key: Key
     # the encrypted contents of the item. The format of this is only specified
     # in client code. Its important to remember that this piece of information
