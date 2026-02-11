@@ -24,7 +24,7 @@ DATA_DIR = Path(f"{SCRIPT_DIR}/__data__")
 
 shutil.rmtree(DATA_DIR,ignore_errors=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
-db = Database(DATA_DIR)
+db = Database(DATA_DIR.__str__())
 
 user_email1 = Email("yarden@cohen.com")
 user_email2 = Email("yarden@kohen.com")

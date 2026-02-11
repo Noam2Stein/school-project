@@ -1,4 +1,4 @@
-from .socket import ServerConnection
+from .socket_wrapper import ServerConnection
 from .request import Request
 
 class Client:

@@ -1,7 +1,7 @@
 from time import sleep
 from concurrent.futures import ThreadPoolExecutor
 
-from lib.socket import ServerListener
+from lib.socket_wrapper import ServerListener
 from lib.request_handler import Client, handle_next_request
 
 listener = ServerListener()

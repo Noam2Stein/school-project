@@ -181,7 +181,7 @@ class Database:
         with self._lock:
             self._cursor.execute(
                 """
-                SELECT auth_key, items, public_key, messages FROM users WHERE email = ?
+                SELECT auth_key, private_info, public_key, messages FROM users WHERE email = ?
                 """,
                 (email.string,),
             )
@@ -199,7 +199,7 @@ class Database:
 
             return User(
                 auth_key=Key(int.from_bytes(value["auth_key"])),
-                items=value["items"],
+                private_info=value["private_info"],
                 public_key=Key(int.from_bytes(value["public_key"])),
                 messages=pickle.loads(value["messages"]),
                 description=description_value["description"],

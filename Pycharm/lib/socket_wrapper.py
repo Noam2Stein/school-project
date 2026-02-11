@@ -1,10 +1,9 @@
-import pickle
+import json
 from time import time, sleep
 from socket import socket
 from select import select
 
-from .request import Request
-from .response import Response
+from .request_response import Request, Response
 
 SERVER_PORT = 2048
 SERVER_IP = "INSERT IP HERE"
@@ -27,11 +26,14 @@ class RawConnection:
         self._recv_list = []
 
     def has_input(self) -> bool:
-        return select([self._socket], [], [], 0)[0]
+        r_list, _, _ = select([self._socket], [], [], 0)[0]
+        if r_list:
+            return True
+        else:
+            return False
 
     def recv_raw(self) -> bytes | None:
-        there_is_input = select([self._socket], [], [], 0)[0]
-        if there_is_input:
+        if self.has_input():
             self._recv_buf.extend(self._socket.recv(65536))
 
         while True:
@@ -55,8 +57,8 @@ class RawConnection:
         return self._recv_list.pop(0)
 
     def send_raw(self, message: bytes):
-        self._socket.sendall(len(message).to_bytes(4))
-        self._socket.sendall(message)
+        self._socket.send(len(message).to_bytes(4))
+        self._socket.send(message)
 
     def close(self):
         """
@@ -70,27 +72,30 @@ class RawConnection:
 class ClientConnection(RawConnection):
     def recv(self) -> Response | None:
         serialized_message = self.recv_raw()
-        if serialized_message == None:
+        if serialized_message is None:
             return None
         
-        return pickle.loads(serialized_message)
+        return json.loads(serialized_message)
 
     def send(self, message: Request):
-        serialized_message = pickle.dumps(message)
-        self.send_raw(serialized_message)
+        serialized_message = json.dumps(message)
+        self.send_raw(serialized_message.encode())
 
 class ServerConnection(RawConnection):
     def recv(self) -> Request | None:
         serialized_message = self.recv_raw()
-        if serialized_message == None:
+        if serialized_message is None:
             return None
         
-        return pickle.loads(serialized_message)
+        return json.loads(serialized_message)
 
     def send(self, message: Response):
-        serialized_message = pickle.dumps(message)
-        self.send_raw(serialized_message)
+        serialized_message = json.dumps(message)
+        self.send_raw(serialized_message.encode())
 
+# Waits for clients to join the server.
+#
+# This is not used to talk to a single client.
 class ServerListener:
     _socket: socket
 
@@ -121,7 +126,7 @@ def try_connect_to_server() -> ClientConnection | None:
     s = socket()
     s.setblocking(False)
 
-    start_time = time.time()
+    start_time = time()
     while True:
         try:
             s.connect((SERVER_IP, SERVER_PORT))
@@ -131,4 +136,3 @@ def try_connect_to_server() -> ClientConnection | None:
             continue
     
     return None
-
