@@ -12,6 +12,11 @@ class SignupRequest:
     # will then be hashed again by the server then stored on the database to use
     # for comparison on each attempt to login.
     auth_key: int
+    # The user's private information in an encrypted form where the format is
+    # specified by the client.
+    private_info: bytes
+    # the public key of the user used to send them encrypted messages.
+    public_key: str
 
 # The server's response to `SignupRequest`.
 @dataclass
@@ -40,10 +45,10 @@ class LoginResponse:
     type: Literal["LoginResponse"]
     # Was the login succesful?
     is_succees: bool
-    # `true` if the password was correct. Its possible that the password was
-    # correct but the login still failed because of an unknown server issue and
-    # thats why the seperation of flags.
-    password_is_correct: bool
+    # `true` is the request failed because of an incorrect password.
+    incorrect_password: bool
+    # `true` if the user doesn't exist.
+    user_doesnt_exist: bool
 
 # A client request to fetch information both about their logged in to user and
 # general information.
@@ -55,6 +60,10 @@ class FetchRequest:
 @dataclass
 class FetchResponse:
     type: Literal["FetchResponse"]
+    # is it a success...
+    is_success: bool
+    # did the request fail because the client isn't logged in.
+    isnt_logged_in: bool 
     # The user's private information in an encrypted form where the format is
     # specified by the client.
     private_info: bytes
@@ -68,7 +77,6 @@ class FetchResponse:
     # The public keys of all users in the order matching `user_emails`. The
     # public key of a user is used to send messages to that user.
     user_public_keys: list[bytes]
-
 
 # A client request to push information on the user onto the server.
 @dataclass
@@ -88,6 +96,8 @@ class PushResponse:
     type: Literal["PushResponse"]
     # Was it succesful. If not, its important to send again.
     is_succees: bool
+    # did the request fail because the client isn't logged in.
+    isnt_logged_in: bool
 
 # A client request to send a message to another user via the server.
 @dataclass
@@ -203,6 +213,10 @@ class ReleaseItemResponse:
     type: Literal["ReleaseItemResponse"]
     # Is it succesful.
     is_success: bool
+    # Did it fail because the `auth_key` is wrong. If this is false and
+    # `is_success` is false, there was an unknown error and the client should
+    # try again.
+    wrong_key: bool
 
 Request = SignupRequest | LoginRequest | FetchRequest | PushRequest | SendRequest | ItemRequest | CreateItemRequest | EncryptItemRequest | ReleaseItemRequest
 Response = SignupResponse | LoginResponse | FetchResponse | PushResponse | SendResponse | ItemResponse | CreateItemResponse | EncryptItemResponse | ReleaseItemResponse

@@ -14,6 +14,3 @@ while recv is None:
 assert recv == LoginRequest(auth_key=5430897456,email="yarden.cohen@america.us")
 
 conn.send(LoginResponse(is_succees=True,password_is_correct=True))
-
-
-

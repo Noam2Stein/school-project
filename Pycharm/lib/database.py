@@ -174,6 +174,36 @@ class Database:
                 ),
             )
             self._conn.commit()
+
+    # returns true if the database has a user with the given email.
+    def has_user(self, email: Email) -> bool:
+        with self._lock:
+            self._cursor.execute(
+                """
+                SELECT FROM users WHERE email = ?
+                """,
+                (email.string,),
+            )
+            value = self._cursor.fetchone()
+            if value is None:
+                return False
+            else:
+                return True
+
+    # returns true if the database has an item with the given id.
+    def has_item(self, id: Uuid) -> bool:
+        with self._lock:
+            self._cursor.execute(
+                """
+                SELECT FROM items WHERE id = ?
+                """,
+                (id.bytes,),
+            )
+            value = self._cursor.fetchone()
+            if value is None:
+                return False
+            else:
+                return True
     
     # Returns information stored about a user. If this function panics you can
     # guess that the user doesn't exist.
@@ -204,6 +234,44 @@ class Database:
                 messages=pickle.loads(value["messages"]),
                 description=description_value["description"],
             )
+
+    # returns the auth key of the given user or panics if the email doesn't
+    # exist.
+    def get_user_auth_key(self, email: Email) -> Key:
+        with self._lock:
+            self._cursor.execute(
+                """
+                SELECT auth_key FROM users WHERE email = ?
+                """,
+                (email.string,),
+            )
+            user = self._cursor.fetchone()
+            if user is None:
+                raise Exception(f"user {email} doesn't exist")
+
+            return Key(int.from_bytes(user["auth_key"]))
+
+    # returns the emails, descriptions, and public keys of all users in the database.
+    def get_user_emails_descs_pub_keys(self) -> list[tuple[Email, str, Key]]:
+        with self._lock:
+            self._cursor.execute(
+                """
+                SELECT users.email, user_descriptions.description, users.public_key
+                FROM users
+                JOIN user_descriptions
+                    ON users.email = user_descriptions.email
+                """
+            )
+            rows = self._cursor.fetchall()
+
+            return [
+                (
+                    Email(row["email"]),
+                    row["description"],
+                    Key(int.from_bytes(row["public_key"]))
+                )
+                for row in rows
+            ]
     
     # Returns information stored about an item. If this function panics, the
     # item doesn't exist. The result of this function contains the actual data
@@ -247,6 +315,21 @@ class Database:
                 contents=bytes(),
                 release_keys=pickle.loads(value["release_keys"]),
             )
+
+    # Returns the authentication key of an item.
+    def get_item_auth_key(self, id: Uuid) -> Key:
+        with self._lock:
+            self._cursor.execute(
+                """
+                SELECT auth_key FROM items WHERE id = ?
+                """,
+                (id.bytes,),
+            )
+            value = self._cursor.fetchone()
+            if value is None:
+                raise Exception(f"item {id} doesn't exist")
+            
+            return Key(int.from_bytes(value["auth_key"]))
 
     # Removes the info about a user from the database. This function does not
     # panic if the user doesn't exist.
