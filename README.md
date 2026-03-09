@@ -4,7 +4,6 @@ Todo:
 
 - test server using dummy client code and refactor to please teacher.
 - implement the client API.
-- create minimal GUI.
 - from there its many refactors to please teacher.
 
 A school project i am *forced* to make. This project *does not* live up to my

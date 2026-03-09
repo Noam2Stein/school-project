@@ -30,7 +30,7 @@ class ClientBackend:
 
     # Creates a new account in the background. This is considered done for a single call, before
     # trying again and failing with already exists. This automatically syncs or "fetches" with the server.
-    def signup(self, email: str, password: str) -> Literal["wait", "done", "already exists", "invalid password", "not connected", "unknown server error"]:
+    def signup(self, email: str, password: str, description: str) -> Literal["wait", "done", "already exists", "invalid password", "not connected", "unknown server error"]:
         raise RuntimeError("todo")
     
     # Returns the email this client is currently logged in as. This is an error even if
@@ -97,9 +97,9 @@ class ClientBackend:
     def released_item_timelimit(self, id: Uuid) -> datetime | Literal["not logged in", "havent fetched", "doesnt exist", "corrupt", "havent released"]:
         raise RuntimeError("todo")
 
-    # Creates a new item in the background. This is considered done returning the id only for a single call,
-    # after the first call returning the ID, itll try to create another item with the same name.
-    def create_item(self, name: str, data: bytes) -> Uuid | Literal["wait", "not logged in", "corrupt", "not connected", "unknown server error"]:
+    # Creates a new item in the background. This is considered done only for a single call,
+    # after the first call, itll try to create another item with the same name.
+    def create_item(self, name: str, data: bytes) -> Literal["wait", "done", "not logged in", "corrupt", "not connected", "unknown server error"]:
         raise RuntimeError("todo")
     
     # Invites another user to the given item in the background. This gives that
