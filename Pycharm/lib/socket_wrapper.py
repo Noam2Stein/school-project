@@ -2,11 +2,12 @@ import json
 from time import time, sleep
 from socket import socket
 from select import select
+from dataclasses import asdict
 
-from .request_response import Request, Response
+from lib.request_response import Request, Response
 
 SERVER_PORT = 2048
-SERVER_IP = "INSERT IP HERE"
+SERVER_IP = "127.0.0.1"
 
 class RawConnection:
     """
@@ -26,7 +27,7 @@ class RawConnection:
         self._recv_list = []
 
     def has_input(self) -> bool:
-        r_list, _, _ = select([self._socket], [], [], 0)[0]
+        r_list, _, _ = select([self._socket], [], [], 0)
         if r_list:
             return True
         else:
@@ -78,7 +79,7 @@ class ClientConnection(RawConnection):
         return json.loads(serialized_message)
 
     def send(self, message: Request):
-        serialized_message = json.dumps(message)
+        serialized_message = json.dumps(asdict(message))
         self.send_raw(serialized_message.encode())
 
 class ServerConnection(RawConnection):
@@ -90,7 +91,7 @@ class ServerConnection(RawConnection):
         return json.loads(serialized_message)
 
     def send(self, message: Response):
-        serialized_message = json.dumps(message)
+        serialized_message = json.dumps(asdict(message))
         self.send_raw(serialized_message.encode())
 
 # Waits for clients to join the server.
@@ -111,12 +112,13 @@ class ServerListener:
         Does not block if theres no connection. 
         """
 
-        conn_is_waiting, _, _ = select([self._socket], [], [], timeout=0)
+        conn_is_waiting, _, _ = select([self._socket], [], [], 0)
         if not conn_is_waiting:
             return None
         
         conn, _ = self._socket.accept()
         return ServerConnection(conn)
+
 
 def try_connect_to_server() -> ClientConnection | None:
     """
@@ -125,14 +127,19 @@ def try_connect_to_server() -> ClientConnection | None:
 
     s = socket()
     s.setblocking(False)
+    try:
+        s.connect((SERVER_IP, SERVER_PORT))
+        return ClientConnection(s)
+    except BlockingIOError:
+        sleep(0.1)
 
     start_time = time()
-    while True:
-        try:
-            s.connect((SERVER_IP, SERVER_PORT))
+    while time() - start_time < 0.5:
+        _, wlist, _ = select([], [s], [], 0)
+        if s in wlist:
             return ClientConnection(s)
-        except:
-            sleep(0.001)
-            continue
-    
+
+        sleep(0.01)
+
+    s.close()
     return None
