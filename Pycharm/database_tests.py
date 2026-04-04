@@ -19,6 +19,10 @@ def assert_eq(a, b):
     if a != b:
         raise RuntimeError(f"{a} != {b}")
 
+def assert_(a: bool):
+    if not a:
+        raise RuntimeError(f"assertion failed")
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(f"{SCRIPT_DIR}/__data__")
 
@@ -67,12 +71,11 @@ item2 = Item(
 release_key_id1 = uuid4()
 release_key_id2 = uuid4()
 
-assert_eq(db.get_user_emails(), [])
-assert_eq(db.get_user_descriptions(), [])
+assert_eq(db.get_user_emails_descs_pub_keys(), [])
 
 db.insert_user(user_email1, user1, False)
-assert(db.has_user(user_email1))
-assert(not db.has_user(user_email2))
+assert_(db.has_user(user_email1))
+assert_(not db.has_user(user_email2))
 assert_panic(lambda: db.insert_user(user_email1, user1, False))
 assert_eq(db.get_user(user_email1), user1)
 assert_eq(db.get_user_auth_key(user_email1), user1.auth_key)
@@ -82,11 +85,11 @@ assert_eq(db.get_user_auth_key(user_email1), user1.auth_key)
 db.insert_user(user_email1, user2, True)
 assert_eq(db.get_user(user_email1), user2)
 assert_eq(db.get_user_auth_key(user_email1), user2.auth_key)
-assert_eq(db.get_user_emails(), [(user_email1, user2.description, user2.public_key)])
+assert_eq(db.get_user_emails_descs_pub_keys(), [(user_email1, user2.description, user2.public_key)])
 
 db.insert_user(user_email2, user1, False)
-assert(db.has_user(user_email1))
-assert(db.has_user(user_email2))
+assert_(db.has_user(user_email1))
+assert_(db.has_user(user_email2))
 assert_panic(lambda: db.insert_user(user_email2, user1, False))
 assert_eq(db.get_user(user_email2), user1)
 assert_eq(db.get_user_auth_key(user_email2), user1.auth_key)
@@ -96,14 +99,14 @@ assert_eq(db.get_user_auth_key(user_email2), user1.auth_key)
 db.insert_user(user_email2, user2, True)
 assert_eq(db.get_user(user_email2), user2)
 assert_eq(db.get_user_auth_key(user_email2), user2.auth_key)
-assert_eq(db.get_user_emails(), [
+assert_eq(db.get_user_emails_descs_pub_keys(), [
     (user_email1, user2.description, user2.public_key),
     (user_email2, user2.description, user2.public_key),
 ])
 
 db.insert_item(item_id1, item1, False)
-assert(db.has_item(item_id1))
-assert(not db.has_item(item_id2))
+assert_(db.has_item(item_id1))
+assert_(not db.has_item(item_id2))
 assert_panic(lambda: db.insert_item(item_id1, item1, False))
 assert_eq(db.get_item(item_id1), item1)
 db.insert_item(item_id1, item1, True)

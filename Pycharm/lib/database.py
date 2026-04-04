@@ -180,7 +180,7 @@ class Database:
         with self._lock:
             self._cursor.execute(
                 """
-                SELECT FROM users WHERE email = ?
+                SELECT email FROM users WHERE email = ?
                 """,
                 (email.string,),
             )
@@ -195,7 +195,7 @@ class Database:
         with self._lock:
             self._cursor.execute(
                 """
-                SELECT FROM items WHERE id = ?
+                SELECT id FROM items WHERE id = ?
                 """,
                 (id.bytes,),
             )
