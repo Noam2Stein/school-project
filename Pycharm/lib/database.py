@@ -64,7 +64,7 @@ class Database:
         self._data_dir = data_dir
         
         sqlite_path = f"{self._data_dir}/.sqlite"
-        self._conn = sqlite3.connect(sqlite_path)
+        self._conn = sqlite3.connect(sqlite_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON;")
         self._cursor = self._conn.cursor()
@@ -111,16 +111,21 @@ class Database:
     # doesn't, or the opposite) the database is kept as it was before and the
     # function panics.
     def insert_user(self, email: Email, value: User, should_already_exist: bool):
+        print("gonna lock")
         with self._lock:
+            print("gonna execute")
             self._cursor.execute(
                 """
                 SELECT auth_key FROM users WHERE email = ?
                 """,
                 (email.string,),
             )
-            if should_already_exist and self._cursor.fetchone() is None:
+            print("gonna fetch")
+            fechedone = self._cursor.fetchone()
+            print("gonna check")
+            if should_already_exist and fechedone is None:
                 raise Exception(f"user {email} doesn't exist")
-            elif not should_already_exist and self._cursor.fetchone() is not None:
+            elif not should_already_exist and fechedone is not None:
                 raise Exception(f"user {email} already exists")
             
             self._cursor.execute(
@@ -180,9 +185,9 @@ class Database:
         with self._lock:
             self._cursor.execute(
                 """
-                SELECT email FROM users WHERE email = ?
+                SELECT auth_key FROM users WHERE email = ?
                 """,
-                (email.string,),
+                (email._string,),
             )
             value = self._cursor.fetchone()
             if value is None:

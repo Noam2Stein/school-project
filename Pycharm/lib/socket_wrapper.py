@@ -6,7 +6,7 @@ from dataclasses import asdict
 
 from lib.request_response import Request, Response
 
-SERVER_PORT = 2048
+SERVER_PORT = 2164
 SERVER_IP = "127.0.0.1"
 
 class RawConnection:

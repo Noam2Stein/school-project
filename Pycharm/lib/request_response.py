@@ -12,10 +12,11 @@ class SignupRequest:
     # for comparison on each attempt to login.
     auth_key: int
     # The user's private information in an encrypted form where the format is
-    # specified by the client.
-    private_info: bytes
+    # specified by the client. This would be of type `bytes` but json serialization
+    # does not support bytes.
+    private_info: str
     # the public key of the user used to send them encrypted messages.
-    public_key: str
+    public_key: int
     type: Literal["SignupRequest"] = "SignupRequest"
 
 # The server's response to `SignupRequest`.
@@ -64,18 +65,19 @@ class FetchResponse:
     # did the request fail because the client isn't logged in.
     isnt_logged_in: bool 
     # The user's private information in an encrypted form where the format is
-    # specified by the client.
-    private_info: bytes
+    # specified by the client. This would be `bytes` but they are not supported by json.
+    private_info: str
     # A list of encrypted messages sent to the user. Format is specified by the
-    # client.
-    messages: list[bytes]
+    # client. This would be `bytes` but they are not supported by json.
+    messages: list[str]
     # A list of all user emails that use the app.
     user_emails: list[str]
     # A list of all user descriptions that use the app in the order matching `user_emails`.
     user_descriptions: list[str]
     # The public keys of all users in the order matching `user_emails`. The
     # public key of a user is used to send messages to that user.
-    user_public_keys: list[bytes]
+    # This would be `bytes` but they are not supported by json.
+    user_public_keys: list[str]
     type: Literal["FetchResponse"] = "FetchResponse"
 
 # A client request to push information on the user onto the server.
@@ -83,11 +85,13 @@ class FetchResponse:
 class PushRequest:
     # The user's private information in an encrypted form where the format is
     # specified by the client.
-    private_info: bytes
+    # This would be `bytes` but they are not supported by json.
+    private_info: str
     # A list of encrypted messages sent to the user. Format is specified by the
     # client. When pushing, this is often empty because the client already
     # proccesed the messages and put the result in `private_info`.
-    messages: list[bytes]
+    # This would be `bytes` but they are not supported by json.
+    messages: list[str]
     type: Literal["PushRequest"] = "PushRequest"
 
 # The server's response to `PushRequest`.
@@ -107,7 +111,8 @@ class SendRequest:
     # the message in a format encrypted using the user's public key. The
     # contents should be limited (enforced by the server) to a relatively small
     # size (this is not a messanging app).
-    content: bytes
+    # This would be `bytes` but they are not supported by json.
+    content: str
     type: Literal["SendRequest"] = "SendRequest"
 
 # The server's response to `SendRequest`.
@@ -115,6 +120,9 @@ class SendRequest:
 class SendResponse:
     # Was it succesful. If not, its important to send again.
     is_succees: bool
+    invalid_email: bool
+    user_doesnt_exist: bool
+    not_logged_in: bool
     type: Literal["SendResponse"] = "SendResponse"
 
 # A request to get the contents and metadata about a certain "item"
@@ -122,7 +130,8 @@ class SendResponse:
 @dataclass
 class ItemRequest:
     # The item ID.
-    id: bytes
+    # This would be `bytes` but they are not supported by json.
+    id: str
     # A key used to make sure the user has access to the item. This is later
     # hashed on the server and compared to another key from the database.
     auth_key: int
@@ -138,9 +147,11 @@ class ItemResponse:
     wrong_key: bool
     # The contents of the item in an unknown encrypted format thats specified by
     # client code. This may be megabytes long.
-    contents: bytes
+    # This would be `bytes` but they are not supported by json.
+    contents: str
     # The item's release keys's contents. See `database::ReleaseKey`.
-    release_key_contents: list[bytes]
+    # This would be `bytes` but they are not supported by json.
+    release_key_contents: list[str]
     type: Literal["ItemResponse"] = "ItemResponse"
 
 # A request to create a new item.
@@ -148,7 +159,8 @@ class ItemResponse:
 class CreateItemRequest:
     # The contents of the item in encrytped form. The format is specified only
     # in client code.
-    contents: bytes
+    # This would be `bytes` but they are not supported by json.
+    contents: str
     # The origin of the authentication key in `ItemRequest`.
     auth_key: int
     type: Literal["CreateItemRequest"] = "CreateItemRequest"
@@ -159,7 +171,8 @@ class CreateItemResponse:
     # Is it succesful.
     is_success: bool
     # The ID of the item later used in `ItemRequest`.
-    id: bytes
+    # This would be `bytes` but they are not supported by json.
+    id: str
     type: Literal["CreateItemResponse"] = "CreateItemResponse"
 
 # A request from a client to the server to take the item, encrypt it using a
@@ -169,14 +182,17 @@ class CreateItemResponse:
 @dataclass
 class EncryptItemRequest:
     # The ID of the item to encrypt.
-    id: bytes
+    # This would be `bytes` but they are not supported by json.
+    id: str
     # Used to ensure that the client has permissions to encrypt the item.
     # See `ItemRequest::auth_key`.
     auth_key: int
     # The public key used to encrypt the item.
-    public_key: bytes
+    # This would be `bytes` but they are not supported by json.
+    public_key: str
     # The prefix that should be added to the item after its encrypted.
-    prefix: bytes
+    # This would be `bytes` but they are not supported by json.
+    prefix: str
     type: Literal["EncryptItemRequest"] = "EncryptItemRequest"
 
 # The server's response to `EncryptItemRequest`.
@@ -196,13 +212,15 @@ class EncryptItemResponse:
 @dataclass
 class ReleaseItemRequest:
     # The ID of the item to release.
-    id: bytes
+    # This would be `bytes` but they are not supported by json.
+    id: str
     # Used to ensure that the client has permissions to the item.
     # See `ItemRequest::auth_key`.
     auth_key: int
     # The contents of the release key to be used by client code. Format is
     # unspeficied to the server.
-    info: bytes
+    # This would be `bytes` but they are not supported by json.
+    info: str
     # When should the server delete the release key?
     expires: datetime
     type: Literal["ReleaseItemRequest"] = "ReleaseItemRequest"

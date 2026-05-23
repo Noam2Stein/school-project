@@ -1,12 +1,15 @@
 import re
 
+
+class InvalidEmailError(Exception):
+    pass
+
 class Email:
     _EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9_+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-]+$")
 
     def __init__(self, string: str):
         if not self._EMAIL_REGEX.match(string):
-            raise RuntimeError(f"Invalid email: {string}")
-        
+            raise InvalidEmailError(f"Invalid email: {string}")
         self._string = string
 
     def __eq__(self, other):

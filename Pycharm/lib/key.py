@@ -1,5 +1,10 @@
 import hashlib
 
+
+class InvalidKeyError(Exception):
+    pass
+
+
 class Key:
     """
     A 256-bit key stored as an unsigned integer.
@@ -7,10 +12,10 @@ class Key:
 
     def __init__(self, value: int):
         if value < 0:
-            raise RuntimeError("`Key` cannot be negative")
+            raise InvalidKeyError("`Key` cannot be negative")
         
         if value >= 2**256:
-            raise RuntimeError("`Key` must fit in an unsigned 256-bit integer")
+            raise InvalidKeyError("`Key` must fit in an unsigned 256-bit integer")
         
         self.value = value
 
