@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 from typing import Literal
-from datetime import datetime
 
 # A request from a client to create a new user.
 @dataclass
@@ -63,7 +62,7 @@ class FetchResponse:
     # is it a success...
     is_success: bool
     # did the request fail because the client isn't logged in.
-    isnt_logged_in: bool 
+    isnt_logged_in: bool
     # The user's private information in an encrypted form where the format is
     # specified by the client. This would be `bytes` but they are not supported by json.
     private_info: str
@@ -222,7 +221,8 @@ class ReleaseItemRequest:
     # This would be `bytes` but they are not supported by json.
     info: str
     # When should the server delete the release key?
-    expires: datetime
+    # ISO 8601 string (datetime is not JSON serializable).
+    expires: str
     type: Literal["ReleaseItemRequest"] = "ReleaseItemRequest"
 
 # The server's response to `ReleaseItemRequest`.

@@ -162,9 +162,10 @@ class Database:
                 """,
                 (id.bytes,),
             )
-            if should_already_exist and self._cursor.fetchone() is None:
+            result = self._cursor.fetchone()
+            if should_already_exist and result is None:
                 raise Exception(f"item {id} doesn't exist")
-            elif not should_already_exist and self._cursor.fetchone() is not None:
+            elif not should_already_exist and result is not None:
                 raise Exception(f"item {id} already exists")
             
             self._cursor.execute(

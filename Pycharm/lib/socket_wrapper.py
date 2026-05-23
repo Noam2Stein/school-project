@@ -1,19 +1,20 @@
 import json
 from time import time, sleep
-from socket import socket
+from socket import socket, SOL_SOCKET, SO_REUSEADDR
 from select import select
 from dataclasses import asdict
 
 from lib.request_response import Request, Response
 
-SERVER_PORT = 2164
+SERVER_PORT = 47842
 SERVER_IP = "127.0.0.1"
+
 
 class RawConnection:
     """
     A raw peer to peer socket.
 
-    This class should not be used from two or more threads at the same time. 
+    This class should not be used from two or more threads at the same time.
     """
 
     _socket: socket
@@ -54,7 +55,7 @@ class RawConnection:
 
         if len(self._recv_list) == 0:
             return None
-        
+
         return self._recv_list.pop(0)
 
     def send_raw(self, message: bytes):
@@ -70,29 +71,32 @@ class RawConnection:
 
         self._socket.close()
 
+
 class ClientConnection(RawConnection):
     def recv(self) -> Response | None:
         serialized_message = self.recv_raw()
         if serialized_message is None:
             return None
-        
+
         return json.loads(serialized_message)
 
     def send(self, message: Request):
         serialized_message = json.dumps(asdict(message))
         self.send_raw(serialized_message.encode())
 
+
 class ServerConnection(RawConnection):
     def recv(self) -> Request | None:
         serialized_message = self.recv_raw()
         if serialized_message is None:
             return None
-        
+
         return json.loads(serialized_message)
 
     def send(self, message: Response):
         serialized_message = json.dumps(asdict(message))
         self.send_raw(serialized_message.encode())
+
 
 # Waits for clients to join the server.
 #
@@ -102,6 +106,7 @@ class ServerListener:
 
     def __init__(self):
         self._socket = socket()
+        self._socket.setsockopt(SOL_SOCKET, SO_REUSEADDR, 1)
         self._socket.bind(("0.0.0.0", SERVER_PORT))
         self._socket.listen()
 
@@ -109,15 +114,23 @@ class ServerListener:
         """
         Accepts a connection if one is waiting.
 
-        Does not block if theres no connection. 
+        Does not block if theres no connection.
         """
 
         conn_is_waiting, _, _ = select([self._socket], [], [], 0)
         if not conn_is_waiting:
             return None
-        
+
         conn, _ = self._socket.accept()
         return ServerConnection(conn)
+
+    def close(self):
+        """
+        Closes the listening socket so the port is released immediately.
+
+        Call this when the server shuts down.
+        """
+        self._socket.close()
 
 
 def try_connect_to_server() -> ClientConnection | None:
