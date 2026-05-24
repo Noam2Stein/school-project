@@ -197,7 +197,7 @@ def handle_item_request(db: Database, client: Client, request: ItemRequest):
     client.conn.send(ItemResponse(
         is_success=True,
         wrong_key=False,
-        contents=db_item.contents.decode("utf-8"),
+        contents=db_item.contents.decode("latin-1"),
         release_key_contents=[release_key.info.decode("utf-8") for release_key in db_item.release_keys]
     ))
 
@@ -209,7 +209,7 @@ def handle_create_item_request(db: Database, client: Client, request: CreateItem
         client.conn.send(CreateItemResponse(is_success=False, id=""))
         return
 
-    db.insert_item(id, Item(auth_key=auth_key.hash(), contents=request.contents.encode("utf-8"), release_keys=[]), should_already_exist=False)
+    db.insert_item(id, Item(auth_key=auth_key.hash(), contents=request.contents.encode("latin-1"), release_keys=[]), should_already_exist=False)
 
     client.conn.send(CreateItemResponse(is_success=True, id=str(id)))
 
@@ -232,9 +232,11 @@ def handle_encrypt_item_request(db: Database, client: Client, request: EncryptIt
         ))
         return
 
+    from cryptography.hazmat.primitives.serialization import load_pem_public_key
     db_item = db.get_item(id)
     prefix = request.prefix.encode("utf-8")
-    encrypted = encrypt(db_item.contents, request.public_key)
+    pub_key = load_pem_public_key(request.public_key.encode("utf-8"))
+    encrypted = encrypt(db_item.contents, pub_key)
     db_item.contents = prefix + encrypted
     db.insert_item(id, db_item, should_already_exist=True)
 

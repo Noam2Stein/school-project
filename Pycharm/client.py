@@ -1,3 +1,4 @@
+import os
 import tkinter as tk
 import tkinter.filedialog as fd
 from datetime import datetime
@@ -33,7 +34,7 @@ def show_login_screen():
     password_label.pack()
     password_entry = tk.Entry(current_screen, show="*", width=30)
     password_entry.pack()
-    
+
     description_label = tk.Label(current_screen, text="Signup User Description")
     description_label.pack()
     description_entry = tk.Entry(current_screen, width=30)
@@ -130,14 +131,17 @@ def show_item_screen():
     tk.Label(items_frame, text="Size", font=("Arial", 10, "bold")).grid(row=0, column=1, padx=5)
     tk.Label(items_frame, text="Encryption Method", font=("Arial", 10, "bold")).grid(row=0, column=2, padx=5)
 
-    for item_idx, item in enumerate(backend.my_item_ids()):
-        tk.Label(items_frame, text=backend.item_name(item), font=("Arial", 8)).grid(row=item_idx, column=0, padx=5)
-        tk.Label(items_frame, text=f"{backend.item_size(item)} bytes.", font=("Arial", 8)).grid(row=item_idx, column=1, padx=5)
-        tk.Label(items_frame, text=backend.item_encryption_method(item), font=("Arial", 8)).grid(row=item_idx, column=2, padx=5)
-        tk.Button(items_frame, text="Invite", command=lambda item=item: show_invite_screen(item)).grid(row=item_idx, column=3, padx=5)
-        tk.Button(items_frame, text="Release Key", command=lambda item=item: show_release_item_screen(item)).grid(row=item_idx, column=4, padx=5)
-        tk.Button(items_frame, text="Leave", command=lambda item=item: show_leave_screen(item)).grid(row=item_idx, column=5, padx=5)
-        tk.Button(items_frame, text="Delete", command=lambda item=item: show_delete_screen(item)).grid(row=item_idx, column=6, padx=5)
+    my_items = backend.my_item_ids()
+    if isinstance(my_items, list):
+        for item_idx, item in enumerate(my_items):
+            row = item_idx + 1
+            tk.Label(items_frame, text=backend.item_name(item), font=("Arial", 8)).grid(row=row, column=0, padx=5)
+            tk.Label(items_frame, text=f"{backend.item_size(item)} bytes.", font=("Arial", 8)).grid(row=row, column=1, padx=5)
+            tk.Label(items_frame, text=backend.item_encryption_method(item), font=("Arial", 8)).grid(row=row, column=2, padx=5)
+            tk.Button(items_frame, text="Invite", command=lambda item=item: show_invite_screen(item)).grid(row=row, column=3, padx=5)
+            tk.Button(items_frame, text="Release Key", command=lambda item=item: show_release_item_screen(item)).grid(row=row, column=4, padx=5)
+            tk.Button(items_frame, text="Leave", command=lambda item=item: show_leave_screen(item)).grid(row=row, column=5, padx=5)
+            tk.Button(items_frame, text="Delete", command=lambda item=item: show_delete_screen(item)).grid(row=row, column=6, padx=5)
 
     invites_frame = tk.Frame(current_screen)
     invites_frame.pack(pady=5, fill="x")
@@ -146,12 +150,17 @@ def show_item_screen():
     tk.Label(invites_frame, text="Size", font=("Arial", 10, "bold")).grid(row=0, column=1, padx=5)
     tk.Label(invites_frame, text="Encryption Method", font=("Arial", 10, "bold")).grid(row=0, column=2, padx=5)
 
-    for item_idx, item in enumerate(backend.my_item_invitation_ids()):
-        tk.Label(invites_frame, text=backend.item_name(item), font=("Arial", 8)).grid(row=item_idx, column=0, padx=5)
-        tk.Label(invites_frame, text=f"{backend.item_size(item)} bytes.", font=("Arial", 8)).grid(row=item_idx, column=1, padx=5)
-        tk.Label(invites_frame, text=backend.item_encryption_method(item), font=("Arial", 8)).grid(row=item_idx, column=2, padx=5)
-        tk.Button(invites_frame, text="Join", lambda item=item: command=show_join_screen(item)).grid(row=item_idx, column=3, padx=5)
-        tk.Button(invites_frame, text="Reject", lambda item=item: command=show_reject_screen(item)).grid(row=item_idx, column=4, padx=5)
+    invite_items = backend.my_item_invitation_ids()
+    if isinstance(invite_items, list):
+        for item_idx, item in enumerate(invite_items):
+            row = item_idx + 1
+            tk.Label(invites_frame, text=backend.item_name(item), font=("Arial", 8)).grid(row=row, column=0, padx=5)
+            tk.Label(invites_frame, text=f"{backend.item_size(item)} bytes.", font=("Arial", 8)).grid(row=row, column=1, padx=5)
+            tk.Label(invites_frame, text=backend.item_encryption_method(item), font=("Arial", 8)).grid(row=row, column=2, padx=5)
+            tk.Button(invites_frame, text="Join", command=lambda item=item: show_join_screen(item)).grid(row=row, column=3, padx=5)
+            tk.Button(invites_frame, text="Reject", command=lambda item=item: show_reject_screen(item)).grid(row=row, column=4, padx=5)
+
+    status_label.config(text="")
 
 def show_invite_screen(item: Uuid):
     global current_screen
@@ -170,7 +179,7 @@ def show_invite_screen(item: Uuid):
 
     invite_button = tk.Button(current_screen, text="Invite", width=12)
     invite_button.pack()
-    
+
     status_label = tk.Label(current_screen, text="")
     status_label.pack()
 
@@ -233,7 +242,7 @@ def show_invite_screen(item: Uuid):
 
 def show_release_item_screen(item: Uuid):
     global current_screen
-    
+
     if current_screen is not None:
         current_screen.destroy()
 
@@ -284,7 +293,7 @@ def show_release_item_screen(item: Uuid):
 
 def show_create_item_screen():
     global current_screen
-    
+
     if current_screen is not None:
         current_screen.destroy()
 
@@ -304,7 +313,7 @@ def show_create_item_screen():
 
     create_button = tk.Button(current_screen, text="Create", width=12)
     create_button.pack()
-    
+
     status_label = tk.Label(current_screen, text="")
     status_label.pack()
 
@@ -328,7 +337,7 @@ def show_create_item_screen():
             exit_button.config(state="disabled")
             create_button.config(state="disabled")
 
-            result = backend.create_item(file_path.split("\\")[-1], file_bytes)
+            result = backend.create_item(os.path.basename(file_path), file_bytes)
 
             if result == "wait":
                 root.after(100, poll)
@@ -346,7 +355,7 @@ def show_create_item_screen():
 
 def show_leave_screen(item: Uuid):
     global current_screen
-    
+
     if current_screen is not None:
         current_screen.destroy()
 
@@ -374,7 +383,7 @@ def show_leave_screen(item: Uuid):
 
 def show_delete_screen(item: Uuid):
     global current_screen
-    
+
     if current_screen is not None:
         current_screen.destroy()
 
@@ -395,14 +404,14 @@ def show_delete_screen(item: Uuid):
             status_label.config(text="Done")
             root.after(1000, show_item_screen)
         else:
-            status_label.config(text=f"error leaving item: {result}")
+            status_label.config(text=f"error deleting item: {result}")
             root.after(1000, show_item_screen)
 
     poll()
 
 def show_join_screen(item: Uuid):
     global current_screen
-    
+
     if current_screen is not None:
         current_screen.destroy()
 
@@ -430,7 +439,7 @@ def show_join_screen(item: Uuid):
 
 def show_reject_screen(item: Uuid):
     global current_screen
-    
+
     if current_screen is not None:
         current_screen.destroy()
 
