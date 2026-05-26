@@ -73,6 +73,7 @@ class RawConnection:
 
 
 class ClientConnection(RawConnection):
+    """A peer to peer connection from the perspective of the client."""
     def recv(self) -> Response | None:
         serialized_message = self.recv_raw()
         if serialized_message is None:
@@ -86,6 +87,7 @@ class ClientConnection(RawConnection):
 
 
 class ServerConnection(RawConnection):
+    """A peer to peer connection from the perspective of the server"""
     def recv(self) -> Request | None:
         serialized_message = self.recv_raw()
         if serialized_message is None:

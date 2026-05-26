@@ -1,85 +1,26 @@
-"""
-ClientBackend implementation.
-
-CRYPTO MODEL
-============
-Each user has an RSA-2048 key pair generated at signup.
-
-private_info (stored encrypted on the server) is a JSON string:
-{
-  "priv_key_pem_hex": "<AES-GCM encrypted RSA private key, hex encoded>",
-  "items": {
-    "<uuid str>": {
-      "name": "<filename>",
-      "auth_key": <int>,
-      "is_invitation": <bool>   # true = we were invited but haven't joined yet
-    }
-  }
-}
-
-The RSA private key PEM is encrypted with AES-GCM using a 32-byte key derived
-from the user's password via scrypt (same params as Key.hash()).
-
-The RSA public key PEM is stored in the user's description field as:
-  "<display description>|||<RSA public key PEM>"
-so it can be fetched by other users from FetchResponse.user_descriptions.
-The display description defaults to the description given at signup.
-
-ITEM ENCRYPTION MODEL
-=====================
-- create_item(name, data):
-    1. Encrypt data with our RSA public key -> ciphertext
-    2. CreateItemRequest(contents=ciphertext, auth_key=random_key)
-    3. Store {name, auth_key, is_invitation=False} in private_info
-
-- join_item(id):
-    1. Fetch item contents from server (ItemRequest)
-    2. EncryptItemRequest with our RSA public key (adds our layer on top)
-    3. Move item from is_invitation=True to is_invitation=False in private_info
-
-- release_item(id, until):
-    1. Fetch item contents
-    2. Decrypt our outermost layer with our RSA private key
-    3. ReleaseItemRequest(info=decrypted_bytes, expires=until)
-    The release key info IS the partially (or fully) decrypted data, so others can read.
-
-- read_item(id):
-    1. Fetch item from server (ItemRequest)
-    2. If release_key_contents is non-empty, return release_key_contents[0] decoded.
-       (The data has been fully released by at least one person.)
-    3. Otherwise try decrypting the contents with our RSA private key directly.
-       This works only if we're the sole encryptor or the innermost layer is ours.
-
-- item is "locked" if release_key_contents is empty (nobody has released yet).
-
-POLLING MODEL
-=============
-The GUI calls each background method repeatedly until it returns something other
-than "wait". We use a simple state machine per operation stored as instance variables.
-Because the GUI runs on the main thread and calls poll on root.after(), there is no
-real concurrency -- one operation at a time. We use a threading.Thread to do the
-actual blocking network call so the GUI doesn't freeze, then read the result back
-on the next poll call.
-"""
-
 import os
 import json
 import hashlib
 import threading
 from uuid import UUID as Uuid, uuid4
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Callable, Any
 
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.asymmetric.rsa import (
+    RSAPublicKey,
+    RSAPrivateKey,
+)
 
-from lib.socket_wrapper import try_connect_to_server
+from lib.email import Email
+from lib.socket_wrapper import try_connect_to_server, ClientConnection
 from lib.request_response import (
     SignupRequest, SignupResponse,
     LoginRequest, LoginResponse,
     FetchRequest, FetchResponse,
-    PushRequest, PushResponse,
+    PushRequest, PushResponse, SendResponse,
     CreateItemRequest, CreateItemResponse,
     ItemRequest, ItemResponse,
     EncryptItemRequest, EncryptItemResponse,
@@ -88,126 +29,88 @@ from lib.request_response import (
 )
 
 # ---------------------------------------------------------------------------
-# crypto helpers
-# ---------------------------------------------------------------------------
-
-def _derive_aes_key(password: str) -> bytes:
-    """Derive a 32-byte AES key from a password using scrypt."""
-    return hashlib.scrypt(
-        password=password.encode("utf-8"),
-        salt=b"client-private-info-salt",
-        n=2**14, r=8, p=1, dklen=32,
-    )
-
-def _encrypt_private_key(priv_key_pem: bytes, aes_key: bytes) -> str:
-    """Encrypt RSA private key PEM bytes with AES-GCM. Returns hex string."""
-    nonce = os.urandom(12)
-    ciphertext = AESGCM(aes_key).encrypt(nonce, priv_key_pem, None)
-    return (nonce + ciphertext).hex()
-
-def _decrypt_private_key(hex_blob: str, aes_key: bytes) -> bytes:
-    """Decrypt hex blob back to RSA private key PEM bytes."""
-    blob = bytes.fromhex(hex_blob)
-    nonce, ciphertext = blob[:12], blob[12:]
-    return AESGCM(aes_key).decrypt(nonce, ciphertext, None)
-
-def _rsa_encrypt(data: bytes, pub_key) -> bytes:
-    """Encrypt data with RSA public key using hybrid AES-GCM + RSA-OAEP."""
-    aes_key = os.urandom(32)
-    nonce = os.urandom(12)
-    ciphertext = AESGCM(aes_key).encrypt(nonce, data, None)
-    encrypted_aes_key = pub_key.encrypt(
-        aes_key,
-        padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                     algorithm=hashes.SHA256(), label=None)
-    )
-    return encrypted_aes_key + nonce + ciphertext
-
-def _rsa_decrypt(blob: bytes, priv_key) -> bytes:
-    """Decrypt hybrid blob with RSA private key."""
-    encrypted_aes_key = blob[:256]
-    nonce = blob[256:268]
-    ciphertext = blob[268:]
-    aes_key = priv_key.decrypt(
-        encrypted_aes_key,
-        padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                     algorithm=hashes.SHA256(), label=None)
-    )
-    return AESGCM(aes_key).decrypt(nonce, ciphertext, None)
-
-def _pub_key_to_pem(pub_key) -> str:
-    return pub_key.public_bytes(
-        serialization.Encoding.PEM,
-        serialization.PublicFormat.SubjectPublicKeyInfo,
-    ).decode("utf-8")
-
-def _pem_to_pub_key(pem: str):
-    return serialization.load_pem_public_key(pem.encode("utf-8"))
-
-def _priv_key_to_pem(priv_key) -> bytes:
-    return priv_key.private_bytes(
-        serialization.Encoding.PEM,
-        serialization.PrivateFormat.PKCS8,
-        serialization.NoEncryption(),
-    )
-
-def _pem_to_priv_key(pem: bytes):
-    return serialization.load_pem_private_key(pem, password=None)
-
-def _pack_description(display: str, pub_key_pem: str) -> str:
-    return display + "|||" + pub_key_pem
-
-def _unpack_description(description: str):
-    """Returns (display, pub_key_pem) or (description, None) if not packed."""
-    if "|||" in description:
-        parts = description.split("|||", 1)
-        return parts[0], parts[1]
-    return description, None
-
-# ---------------------------------------------------------------------------
 # background task helper
 # ---------------------------------------------------------------------------
 
-_SENTINEL_PENDING = object()   # thread not started yet
-_SENTINEL_RUNNING = object()   # thread is running
-# result slot holds the actual result once done
+_TASK_LOCK = threading.Lock()
 
-class _Task:
-    """Runs a callable in a background thread. Poll result with .get()."""
-    def __init__(self):
-        self._result = _SENTINEL_PENDING
-        self._lock = threading.Lock()
 
-    def start(self, fn, *args):
-        self._result = _SENTINEL_RUNNING
+class Task:
+    def __init__(self, fn: Callable, *args: Any):
+        self._result: Any = None
+        self._exception: Exception | None = None
+
+        self._is_running = True
+        self._has_failed = False
+        self._has_succeeded = False
+
         def run():
             try:
-                result = fn(*args)
+                with _TASK_LOCK:
+                    self._result = fn(*args)
+
+                self._has_succeeded = True
             except Exception as e:
-                result = ("__exception__", str(e))
-            with self._lock:
-                self._result = result
-        threading.Thread(target=run, daemon=True).start()
+                self._exception = e
+                self._has_failed = True
+            finally:
+                self._is_running = False
 
-    def get(self):
-        """Returns _SENTINEL_RUNNING if still running, otherwise the result."""
-        with self._lock:
-            return self._result
+        self._thread = threading.Thread(target=run, daemon=True)
+        self._thread.start()
 
-    def is_pending(self):
-        return self._result is _SENTINEL_PENDING
+    def is_running(self) -> bool:
+        return self._is_running
 
-    def reset(self):
-        self._result = _SENTINEL_PENDING
+    def has_failed(self) -> bool:
+        return self._has_failed
+
+    def has_succeeded(self) -> bool:
+        return self._has_succeeded
+
+    def result(self) -> Any:
+        return self._result
+
+    def exception(self) -> Exception | None:
+        return self._exception
 
 # ---------------------------------------------------------------------------
 # ClientBackend
 # ---------------------------------------------------------------------------
 
+
 class ClientBackend:
+    # state
+    _conn: ClientConnection | None
+    _task: Task | None
+
+    # global info
+    _global_user_emails: list[str] | None
+    _global_user_descriptions: list[str] | None
+    _global_user_pub_keys: list[RSAPublicKey] | None
+
+    # login info
+    _email: Email | None
+    _password: str | None
+
+    # private info
+    _priv_key: RSAPrivateKey | None
+    _item_ids: list[int]
+    _item_names: list[str]
+    _item_auth_keys: list[int]
+    _item_locked: list[bool | None]
+    _item_sizes: list[int]
+    _item_release_until: list[str | None]
+
+    # invitations
+    _invitation_ids: list[int]
+    _invitation_names: list[str]
+    _invitation_auth_keys: list[int]
+
     def __init__(self):
         # connection
         self._conn = None
+        self._task = None
 
         # auth state
         self._email: str | None = None
@@ -217,54 +120,94 @@ class ClientBackend:
 
         # cached fetch data
         self._fetched_private_info: dict | None = None  # parsed private_info JSON
-        self._fetched_user_emails: list[str] | None = None
-        self._fetched_user_descriptions: list[str] | None = None
-        self._fetched_user_public_keys: list[str] | None = None
+        self._global_user_emails: list[str] | None = None
+        self._global_user_descriptions: list[str] | None = None
+        self._global_user_pub_keys: list[str] | None = None
 
-        # background tasks
-        self._task = _Task()
-        self._task_kind: str | None = None   # what the current task is doing
-        self._task_result = None             # last completed result to return to GUI
+    # ------------------------------------------------------------------
+    # helpers
+    # ------------------------------------------------------------------
+
+
+    def _derive_key_from_password(self, password: str) -> bytes:
+        """Derive a 32-byte AES key from a password using scrypt."""
+        return hashlib.scrypt(
+            password=password.encode("utf-8"),
+            salt=b"i-hate-school",
+            n=2 ** 14, r=8, p=1, dklen=32,
+        )
+
+
+    def _serialize_pub_key(self, pub_key: RSAPublicKey) -> str:
+        return pub_key.public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        ).decode("utf-8")
+
+
+    def _deserialize_pub_key(self, pem: str) -> RSAPublicKey:
+        return serialization.load_pem_public_key(pem.encode("utf-8"))
+
+
+    def _serialize_priv_key(self, priv_key: RSAPrivateKey) -> str:
+        return priv_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ).decode("utf-8")
+
+
+    def _deserialize_priv_key(self, pem: str) -> RSAPrivateKey:
+        return serialization.load_pem_private_key(pem.encode("utf-8"), password=None)
+
+
+    def _user_pub_key(self, email: str) -> RSAPublicKey | None:
+        if self._global_user_emails is None:
+            return None
+
+        try:
+            idx = self._global_user_emails.index(email)
+        except ValueError:
+            return None
+
+        serialized_pub_key = self._global_user_pub_keys[idx]
+        return self._deserialize_pub_key(serialized_pub_key)
 
     # ------------------------------------------------------------------
     # connection
     # ------------------------------------------------------------------
 
-    def _ensure_conn(self) -> bool:
-        """Returns True if connected, False otherwise."""
+    def _ensure_server_connection(self) -> bool:
         if self._conn is not None:
             return True
         self._conn = try_connect_to_server()
         return self._conn is not None
 
-    def _recv(self):
-        r = self._conn.recv()
-        while r is None:
-            r = self._conn.recv()
-        return r
+    def _recv_from_server(self):
+        result = self._conn.recv()
+        while result is None:
+            result = self._conn.recv()
+        return result
 
     # ------------------------------------------------------------------
     # private_info encode/decode
     # ------------------------------------------------------------------
 
-    def _encode_private_info(self) -> str:
-        """Serialize and encrypt private_info to a str for PushRequest."""
-        aes_key = _derive_aes_key(self._password)
-        priv_pem = _priv_key_to_pem(self._priv_key)
-        encrypted_hex = _encrypt_private_key(priv_pem, aes_key)
+    def _serialize_and_encrypt_priv_info(self) -> str:
+        private_key = self._derive_key_from_password(self._password)
         payload = {
-            "priv_key_pem_hex": encrypted_hex,
+            "private_key": private_key,
             "items": self._fetched_private_info.get("items", {}),
         }
         return json.dumps(payload)
 
-    def _decode_private_info(self, raw: str) -> dict | None:
+    def _decrypt_and_deserialize_priv_info(self, raw: str) -> dict | None:
         """Decrypt and parse private_info str. Returns None on failure."""
         try:
             payload = json.loads(raw)
-            aes_key = _derive_aes_key(self._password)
+            aes_key = _derive_key_from_password(self._password)
             priv_pem = _decrypt_private_key(payload["priv_key_pem_hex"], aes_key)
-            self._priv_key = _pem_to_priv_key(priv_pem)
+            self._priv_key = _deserialize_priv_key(priv_pem)
             self._pub_key = self._priv_key.public_key()
             return payload
         except Exception:
@@ -276,14 +219,14 @@ class ClientBackend:
 
     def fetch_from_server(self) -> Literal["wait", "not connected", "done", "unknown server error"]:
         if self._task.is_pending():
-            if not self._ensure_conn():
+            if not self._ensure_server_connection():
                 return "not connected"
             self._task_kind = "fetch"
             self._task.start(self._do_fetch)
             return "wait"
 
         result = self._task.get()
-        if result is _SENTINEL_RUNNING:
+        if result is _TASK_RUNNING:
             return "wait"
 
         self._task.reset()
@@ -292,17 +235,17 @@ class ClientBackend:
     def _do_fetch(self):
         try:
             self._conn.send(FetchRequest())
-            r = FetchResponse(**self._recv())
+            r = FetchResponse(**self._recv_from_server())
             if not r.is_success:
                 return "unknown server error"
 
-            self._fetched_user_emails = r.user_emails
-            self._fetched_user_descriptions = r.user_descriptions
-            self._fetched_user_public_keys = r.user_public_keys
+            self._global_user_emails = r.user_emails
+            self._global_user_descriptions = r.user_descriptions
+            self._global_user_pub_keys = r.user_public_keys
 
             # decode private_info if logged in
             if self._email is not None and self._password is not None:
-                parsed = self._decode_private_info(r.private_info)
+                parsed = self._decrypt_and_deserialize_priv_info(r.private_info)
                 if parsed is not None:
                     self._fetched_private_info = parsed
 
@@ -316,19 +259,18 @@ class ClientBackend:
     # ------------------------------------------------------------------
 
     def global_user_emails(self) -> list[str] | Literal["havent fetched"]:
-        if self._fetched_user_emails is None:
+        if self._global_user_emails is None:
             return "havent fetched"
-        return self._fetched_user_emails
+        return self._global_user_emails
 
     def global_user_description(self, email: str) -> str | Literal["havent fetched", "doesnt exist"]:
-        if self._fetched_user_emails is None:
+        if self._global_user_emails is None:
             return "havent fetched"
         try:
-            idx = self._fetched_user_emails.index(email)
+            idx = self._global_user_emails.index(email)
         except ValueError:
             return "doesnt exist"
-        display, _ = _unpack_description(self._fetched_user_descriptions[idx])
-        return display
+        return self._global_user_descriptions[idx]
 
     # ------------------------------------------------------------------
     # login
@@ -340,14 +282,14 @@ class ClientBackend:
             return "done"
 
         if self._task.is_pending():
-            if not self._ensure_conn():
+            if not self._ensure_server_connection():
                 return "not connected"
             self._task_kind = "login"
             self._task.start(self._do_login, email, password)
             return "wait"
 
         result = self._task.get()
-        if result is _SENTINEL_RUNNING:
+        if result is _TASK_RUNNING:
             return "wait"
 
         self._task.reset()
@@ -360,7 +302,7 @@ class ClientBackend:
                                n=2**14, r=8, p=1, dklen=32)
             )
             self._conn.send(LoginRequest(email=email, auth_key=auth_key))
-            r = LoginResponse(**self._recv())
+            r = LoginResponse(**self._recv_from_server())
             if not r.is_succees:
                 if r.incorrect_password:
                     return "wrong password"
@@ -371,15 +313,15 @@ class ClientBackend:
 
             # fetch to load private_info and RSA key
             self._conn.send(FetchRequest())
-            fr = FetchResponse(**self._recv())
+            fr = FetchResponse(**self._recv_from_server())
             if not fr.is_success:
                 return "unknown server error"
 
-            self._fetched_user_emails = fr.user_emails
-            self._fetched_user_descriptions = fr.user_descriptions
-            self._fetched_user_public_keys = fr.user_public_keys
+            self._global_user_emails = fr.user_emails
+            self._global_user_descriptions = fr.user_descriptions
+            self._global_user_pub_keys = fr.user_public_keys
 
-            parsed = self._decode_private_info(fr.private_info)
+            parsed = self._decrypt_and_deserialize_priv_info(fr.private_info)
             if parsed is None:
                 return "unknown server error"
             self._fetched_private_info = parsed
@@ -399,14 +341,14 @@ class ClientBackend:
             return "done"
 
         if self._task.is_pending():
-            if not self._ensure_conn():
+            if not self._ensure_server_connection():
                 return "not connected"
             self._task_kind = "signup"
             self._task.start(self._do_signup, email, password, description)
             return "wait"
 
         result = self._task.get()
-        if result is _SENTINEL_RUNNING:
+        if result is _TASK_RUNNING:
             return "wait"
 
         self._task.reset()
@@ -423,79 +365,28 @@ class ClientBackend:
             # generate RSA key pair
             priv_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
             pub_key = priv_key.public_key()
-            pub_pem = _pub_key_to_pem(pub_key)
+            pub_pem = _serialize_pub_key(pub_key)
 
             # build initial private_info
-            aes_key = _derive_aes_key(password)
-            priv_pem = _priv_key_to_pem(priv_key)
+            aes_key = _derive_key_from_password(password)
+            priv_pem = _serialize_priv_key(priv_key)
             encrypted_hex = _encrypt_private_key(priv_pem, aes_key)
             private_info_str = json.dumps({
                 "priv_key_pem_hex": encrypted_hex,
                 "items": {},
             })
 
-            # pack RSA pub key into description so others can use it
-            packed_description = _pack_description(description, pub_pem)
-
             self._conn.send(SignupRequest(
                 email=email,
                 auth_key=auth_key,
                 private_info=private_info_str,
-                public_key=0,  # int field unused; real pub key is in description
+                public_key=pub_pem,
             ))
-            r = SignupResponse(**self._recv())
+            r = SignupResponse(**self._recv_from_server())
             if not r.is_succees:
                 if r.email_is_taken:
                     return "already exists"
                 return "unknown server error"
-
-            # push description with packed pub key
-            # signup auto-logs us in server-side, now push description via push
-            # Actually description goes in via signup's User(..., description=...)
-            # but signup sets description="" on the server. We need to push it.
-            # Use PushRequest to update private_info (description is stored separately
-            # on the server in user_descriptions table, not via push).
-            # The server's handle_signup_request sets description="" -- we can't change it via push.
-            # BUT: we stored the pub key pem in private_info above. 
-            # We also need others to see our pub key. The only public field is description.
-            # The server has no "update description" endpoint.
-            # WORKAROUND: re-signup won't work (already taken). 
-            # Use the description that was passed to signup... but the server ignores it (sets "").
-            # 
-            # Solution: store pub key in private_info, and when inviting a user, 
-            # get their pub key by reading their private_info via a message they send us.
-            # Actually simpler: store pub key in messages via SendRequest to ourselves? No.
-            #
-            # Real solution: The server's user_descriptions table gets populated by insert_user
-            # which is called from handle_signup_request with description="".
-            # We need to update it. The only way to update user data is insert_user with 
-            # should_already_exist=True, which is called from handle_push_request.
-            # BUT PushRequest only updates private_info and messages, NOT description.
-            # 
-            # So description is permanently "" after signup. 
-            # We CANNOT store the pub key in description via the current server API.
-            #
-            # ALTERNATIVE: store pub key in private_info only (for our own use),
-            # and for encrypting to others, use SendRequest to send them our pub key
-            # as a message when we invite them. The invite flow:
-            #   1. invite_user_to_item sends our pub key to the invitee via SendRequest
-            #      (so they can encrypt a layer for us when they join)
-            #   No wait, we need THEIR pub key to encrypt FOR them.
-            #
-            # SIMPLEST WORKING SOLUTION: 
-            # Don't use RSA for inter-user encryption at all. 
-            # Each user generates their own AES key. The item auth_key IS the encryption key.
-            # When joining, encrypt with your own derived key.
-            # Release key = the item auth_key itself (so anyone can decrypt with it).
-            # This is less secure but is literally implementable with the current server API.
-            #
-            # ACTUAL SIMPLEST: items are encrypted with AES derived from auth_key.
-            # No RSA, no key exchange needed.
-            # auth_key (random int) -> AES key -> encrypt/decrypt item contents.
-            # release_item: store the auth_key as release key info (or the decrypted data).
-            # Anyone who fetches the item and has a release key can read it.
-            # But the release key IS the auth_key... then anyone could access the item.
-            # That's actually fine for this app: "release your lock" means sharing the key.
 
             self._email = email
             self._password = password
@@ -505,11 +396,11 @@ class ClientBackend:
 
             # fetch to populate user list
             self._conn.send(FetchRequest())
-            fr = FetchResponse(**self._recv())
+            fr = FetchResponse(**self._recv_from_server())
             if fr.is_success:
-                self._fetched_user_emails = fr.user_emails
-                self._fetched_user_descriptions = fr.user_descriptions
-                self._fetched_user_public_keys = fr.user_public_keys
+                self._global_user_emails = fr.user_emails
+                self._global_user_descriptions = fr.user_descriptions
+                self._global_user_pub_keys = fr.user_public_keys
 
             return "done"
         except Exception as e:
@@ -639,9 +530,9 @@ class ClientBackend:
 
     def _push_private_info(self):
         """Synchronously push private_info to the server. Call from background threads only."""
-        encoded = self._encode_private_info()
+        encoded = self._serialize_and_encrypt_priv_info()
         self._conn.send(PushRequest(private_info=encoded, messages=[]))
-        self._recv()  # consume PushResponse
+        self._recv_from_server()  # consume PushResponse
 
     # ------------------------------------------------------------------
     # create_item
@@ -654,14 +545,14 @@ class ClientBackend:
             return "not logged in"
 
         if self._task.is_pending():
-            if not self._ensure_conn():
+            if not self._ensure_server_connection():
                 return "not connected"
             self._task_kind = "create_item"
             self._task.start(self._do_create_item, name, data)
             return "wait"
 
         result = self._task.get()
-        if result is _SENTINEL_RUNNING:
+        if result is _TASK_RUNNING:
             return "wait"
 
         self._task.reset()
@@ -678,7 +569,7 @@ class ClientBackend:
             contents_str = encrypted.hex()
 
             self._conn.send(CreateItemRequest(contents=contents_str, auth_key=auth_key))
-            r = CreateItemResponse(**self._recv())
+            r = CreateItemResponse(**self._recv_from_server())
             if not r.is_success:
                 return "unknown server error"
 
@@ -715,14 +606,14 @@ class ClientBackend:
             return "havent fetched"
 
         if self._task.is_pending():
-            if not self._ensure_conn():
+            if not self._ensure_server_connection():
                 return "not connected"
             self._task_kind = "read_item"
             self._task.start(self._do_read_item, id)
             return "wait"
 
         result = self._task.get()
-        if result is _SENTINEL_RUNNING:
+        if result is _TASK_RUNNING:
             return "wait"
 
         self._task.reset()
@@ -738,7 +629,7 @@ class ClientBackend:
             auth_key = entry["auth_key"]
 
             self._conn.send(ItemRequest(id=str(id), auth_key=auth_key))
-            r = ItemResponse(**self._recv())
+            r = ItemResponse(**self._recv_from_server())
             if not r.is_success:
                 return "corrupt"
 
@@ -777,14 +668,14 @@ class ClientBackend:
             return "havent fetched"
 
         if self._task.is_pending():
-            if not self._ensure_conn():
+            if not self._ensure_server_connection():
                 return "unknown server error"
             self._task_kind = "release_item"
             self._task.start(self._do_release_item, id, until)
             return "wait"
 
         result = self._task.get()
-        if result is _SENTINEL_RUNNING:
+        if result is _TASK_RUNNING:
             return "wait"
 
         self._task.reset()
@@ -804,7 +695,7 @@ class ClientBackend:
 
             # fetch item to get current contents
             self._conn.send(ItemRequest(id=str(id), auth_key=auth_key))
-            r = ItemResponse(**self._recv())
+            r = ItemResponse(**self._recv_from_server())
             if not r.is_success:
                 return "corrupt"
 
@@ -822,7 +713,7 @@ class ClientBackend:
                 info=plaintext.hex(),
                 expires=until.isoformat(),
             ))
-            rr = ReleaseItemResponse(**self._recv())
+            rr = ReleaseItemResponse(**self._recv_from_server())
             if not rr.is_success:
                 return "unknown server error"
 
@@ -848,14 +739,14 @@ class ClientBackend:
             return "not logged in"
 
         if self._task.is_pending():
-            if not self._ensure_conn():
+            if not self._ensure_server_connection():
                 return "not connected"
             self._task_kind = "invite"
             self._task.start(self._do_invite, user_email, item_id)
             return "wait"
 
         result = self._task.get()
-        if result is _SENTINEL_RUNNING:
+        if result is _TASK_RUNNING:
             return "wait"
 
         self._task.reset()
@@ -867,31 +758,36 @@ class ClientBackend:
             if items is None or str(item_id) not in items:
                 return "item doesnt exist"
 
-            entry = items[str(item_id)]
-            auth_key = entry["auth_key"]
-            item_name = entry.get("name", "unknown")
-            item_size = entry.get("size", 0)
+            target_pub_key = self._user_pub_key(user_email)
+            if target_pub_key is None:
+                return "user doesnt exist"
 
-            # send the invitee a message containing the item id, auth key, and name
-            # so they can join. Format: JSON with item info.
+            entry = items[str(item_id)]
+
             invite_payload = json.dumps({
                 "invite": True,
                 "item_id": str(item_id),
-                "auth_key": auth_key,
-                "name": item_name,
-                "size": item_size,
-            })
+                "auth_key": entry["auth_key"],
+                "name": entry.get("name", "unknown"),
+                "size": entry.get("size", 0),
+            }).encode("utf-8")
 
-            self._conn.send(SendRequest(target_email=user_email, content=invite_payload))
-            r = self._recv()
-            from lib.request_response import SendResponse
-            sr = SendResponse(**r)
+            encrypted_payload = _rsa_encrypt(invite_payload, target_pub_key)
+
+            self._conn.send(SendRequest(
+                target_email=user_email,
+                content=encrypted_payload.hex(),
+            ))
+
+            sr = SendResponse(**self._recv_from_server())
+
             if not sr.is_succees:
                 if sr.user_doesnt_exist:
                     return "user doesnt exist"
                 return "unknown server error"
 
             return "done"
+
         except Exception:
             self._conn = None
             return "not connected"
@@ -912,13 +808,13 @@ class ClientBackend:
         # but we don't store them separately. Re-fetch here.
         try:
             self._conn.send(FetchRequest())
-            fr = FetchResponse(**self._recv())
+            fr = FetchResponse(**self._recv_from_server())
             if not fr.is_success:
                 return
 
-            self._fetched_user_emails = fr.user_emails
-            self._fetched_user_descriptions = fr.user_descriptions
-            self._fetched_user_public_keys = fr.user_public_keys
+            self._global_user_emails = fr.user_emails
+            self._global_user_descriptions = fr.user_descriptions
+            self._global_user_pub_keys = fr.user_public_keys
 
             items = self._fetched_private_info.setdefault("items", {})
             changed = False
@@ -926,9 +822,12 @@ class ClientBackend:
 
             for msg in fr.messages:
                 try:
-                    payload = json.loads(msg)
+                    decrypted = _rsa_decrypt(bytes.fromhex(msg), self._priv_key)
+                    payload = json.loads(decrypted.decode("utf-8"))
+
                     if payload.get("invite"):
                         item_id = payload["item_id"]
+
                         if item_id not in items:
                             items[item_id] = {
                                 "name": payload["name"],
@@ -939,17 +838,19 @@ class ClientBackend:
                                 "size": payload.get("size", 0),
                             }
                             changed = True
-                        # don't keep this message after processing
+
                         continue
+
                 except Exception:
                     pass
+
                 remaining_messages.append(msg)
 
             if changed:
                 # push cleared messages + updated private_info
-                encoded = self._encode_private_info()
+                encoded = self._serialize_and_encrypt_priv_info()
                 self._conn.send(PushRequest(private_info=encoded, messages=remaining_messages))
-                self._recv()
+                self._recv_from_server()
         except Exception:
             pass
 
@@ -963,7 +864,7 @@ class ClientBackend:
             return "havent fetched"
 
         if self._task.is_pending():
-            if not self._ensure_conn():
+            if not self._ensure_server_connection():
                 return "unknown server error"
             # first scan messages for invites if we haven't yet
             self._task_kind = "join_item"
@@ -971,7 +872,7 @@ class ClientBackend:
             return "wait"
 
         result = self._task.get()
-        if result is _SENTINEL_RUNNING:
+        if result is _TASK_RUNNING:
             return "wait"
 
         self._task.reset()
@@ -1014,14 +915,14 @@ class ClientBackend:
             return "havent fetched"
 
         if self._task.is_pending():
-            if not self._ensure_conn():
+            if not self._ensure_server_connection():
                 return "unknown server error"
             self._task_kind = "reject_item"
             self._task.start(self._do_reject_item, id)
             return "wait"
 
         result = self._task.get()
-        if result is _SENTINEL_RUNNING:
+        if result is _TASK_RUNNING:
             return "wait"
 
         self._task.reset()
@@ -1051,14 +952,14 @@ class ClientBackend:
             return "not logged in"
 
         if self._task.is_pending():
-            if not self._ensure_conn():
+            if not self._ensure_server_connection():
                 return "not connected"
             self._task_kind = "delete_item"
             self._task.start(self._do_delete_item, id)
             return "wait"
 
         result = self._task.get()
-        if result is _SENTINEL_RUNNING:
+        if result is _TASK_RUNNING:
             return "wait"
 
         self._task.reset()
@@ -1092,14 +993,14 @@ class ClientBackend:
             return "not logged in"
 
         if self._task.is_pending():
-            if not self._ensure_conn():
+            if not self._ensure_server_connection():
                 return "not connected"
             self._task_kind = "leave_item"
             self._task.start(self._do_leave_item, id)
             return "wait"
 
         result = self._task.get()
-        if result is _SENTINEL_RUNNING:
+        if result is _TASK_RUNNING:
             return "wait"
 
         self._task.reset()
@@ -1116,7 +1017,7 @@ class ClientBackend:
 
             # fetch item contents
             self._conn.send(ItemRequest(id=str(id), auth_key=auth_key))
-            r = ItemResponse(**self._recv())
+            r = ItemResponse(**self._recv_from_server())
             if r.is_success:
                 try:
                     encrypted = bytes.fromhex(r.contents)
@@ -1128,7 +1029,7 @@ class ClientBackend:
                         info=plaintext.hex(),
                         expires=datetime(9999, 12, 31).isoformat(),
                     ))
-                    self._recv()
+                    self._recv_from_server()
                 except Exception:
                     pass
 

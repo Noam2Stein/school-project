@@ -3,10 +3,10 @@ import pickle
 from dataclasses import dataclass
 from datetime import datetime
 from threading import Lock
-from uuid import UUID as Uuid
-
-from lib.key import Key
 from lib.email import Email
+from lib.encryption import PublicKey
+from lib.encode_default import bytes_to_str, str_to_bytes
+
 
 # Information stored about each user in the database. This type only contains
 # data and is not a database handle.
@@ -16,17 +16,18 @@ class User:
     # encrypted once on the client then encrytped again on the server. If the
     # client has given a key that results in this, they are authenticated to
     # access the user's account.
-    auth_key: Key
+    auth_key: str
     # Information private to the user. This is in encrypted form and the format
     # is only specified in client code.
-    private_info: bytes
+    private_info: str
     # The public key used to send messages to the user.
-    public_key: Key
+    public_key: PublicKey
     # A list of messages sent to the user that were encryted using `public_key`.
-    messages: list[bytes]
+    messages: list[str]
     # A publicly available description of the user so that my sql databse uses
     # foreign keys (the teacher asked for it).
     description: str
+
 
 # A release key is a piece of information that can be used to release a single
 # lock on an item (a lock that was enabled by one of the users). The information
@@ -35,10 +36,11 @@ class User:
 @dataclass
 class ReleaseKey:
     # the stored information that clients can request.
-    info: bytes
+    info: str
     # a certain time where the key should be deleted by the server. This is
     # something the client can request from the server to set up.
     expires: datetime
+
 
 # an item is a piece of information encrypted by a group of users. The server
 # doesn't know what users relate to which items. This type only contains data
@@ -48,13 +50,14 @@ class Item:
     # a key that is used to ensure that a client has permission to an item. Its
     # the client's job to give this key each time they want to access the item,
     # then the server hashes it and compared it to this key from the database.
-    auth_key: Key
+    auth_key: str
     # the encrypted contents of the item. The format of this is only specified
     # in client code. Its important to remember that this piece of information
     # may be very large (a large encrpted file for example).
-    contents: bytes
+    contents: str
     # a list of the item's release keys (read the docs for `ReleaseKey`).
     release_keys: list[ReleaseKey]
+
 
 # A handle to the database. Do not create multiple instances of this type at the
 # same time. You can safely call methods of this type from multiple threads at
@@ -67,35 +70,36 @@ class Database:
         self._conn = sqlite3.connect(sqlite_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON;")
-        self._cursor = self._conn.cursor()
 
-        is_new_database = not self._cursor.execute(
+        cursor = self._conn.cursor()
+
+        is_new_database = not cursor.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='users'"
         ).fetchone()
 
         if is_new_database:
-            self._cursor.execute(
+            cursor.execute(
                 """
                 CREATE TABLE users (
                     email TEXT PRIMARY KEY,
-                    auth_key BLOB,
-                    private_info BLOB,
-                    public_key BLOB,
-                    messages BLOB
+                    auth_key TEXT,
+                    private_info TEXT,
+                    public_key TEXT,
+                    messages TEXT
                 );
                 """
             )
-            self._cursor.execute(
+            cursor.execute(
                 """
                 CREATE TABLE items (
                     id TEXT PRIMARY KEY,
-                    auth_key BLOB,
-                    contents BLOB,
-                    release_keys BLOB
+                    auth_key TEXT,
+                    contents TEXT,
+                    release_keys TEXT
                 );
                 """
             )
-            self._cursor.execute(
+            cursor.execute(
                 """
                 CREATE TABLE user_descriptions (
                     email TEXT PRIMARY KEY REFERENCES users(email) ON DELETE CASCADE,
@@ -111,36 +115,33 @@ class Database:
     # doesn't, or the opposite) the database is kept as it was before and the
     # function panics.
     def insert_user(self, email: Email, value: User, should_already_exist: bool):
-        print("gonna lock")
         with self._lock:
-            print("gonna execute")
-            self._cursor.execute(
+            cursor = self._conn.cursor()
+            cursor.execute(
                 """
                 SELECT auth_key FROM users WHERE email = ?
                 """,
                 (email.string,),
             )
-            print("gonna fetch")
-            fechedone = self._cursor.fetchone()
-            print("gonna check")
+            fechedone = cursor.fetchone()
             if should_already_exist and fechedone is None:
                 raise Exception(f"user {email} doesn't exist")
             elif not should_already_exist and fechedone is not None:
                 raise Exception(f"user {email} already exists")
             
-            self._cursor.execute(
+            cursor.execute(
                 """
                 INSERT OR REPLACE INTO users (email, auth_key, private_info, public_key, messages) VALUES (?, ?, ?, ?, ?)
                 """,
                 (
                     email.string,
-                    value.auth_key.value.to_bytes(32),
+                    value.auth_key,
                     value.private_info,
-                    value.public_key.value.to_bytes(32),
-                    pickle.dumps(value.messages),
+                    str(value.public_key),
+                    bytes_to_str(pickle.dumps(value.messages)),
                 ),
             )
-            self._cursor.execute(
+            cursor.execute(
                 """
                 INSERT OR REPLACE INTO user_descriptions (email, description) VALUES (?, ?)
                 """,
@@ -154,29 +155,30 @@ class Database:
     # inserts an "item". If this function fails (item should already exist but
     # doesn't, or the opposite) the database is kept as it was before and the
     # function panics.
-    def insert_item(self, id: Uuid, value: Item, should_already_exist: bool):
+    def insert_item(self, identifier: str, value: Item, should_already_exist: bool):
         with self._lock:
-            self._cursor.execute(
+            cursor = self._conn.cursor()
+            cursor.execute(
                 """
                 SELECT auth_key FROM items WHERE id = ?
                 """,
-                (id.bytes,),
+                (identifier,),
             )
-            result = self._cursor.fetchone()
+            result = cursor.fetchone()
             if should_already_exist and result is None:
-                raise Exception(f"item {id} doesn't exist")
+                raise Exception(f"item {identifier} doesn't exist")
             elif not should_already_exist and result is not None:
-                raise Exception(f"item {id} already exists")
+                raise Exception(f"item {identifier} already exists")
             
-            self._cursor.execute(
+            cursor.execute(
                 """
                 INSERT OR REPLACE INTO items (id, auth_key, contents, release_keys) VALUES (?, ?, ?, ?)
                 """,
                 (
-                    id.bytes,
-                    value.auth_key.value.to_bytes(32),
+                    identifier,
+                    value.auth_key,
                     value.contents,
-                    pickle.dumps(value.release_keys),
+                    bytes_to_str(pickle.dumps(value.release_keys)),
                 ),
             )
             self._conn.commit()
@@ -184,28 +186,30 @@ class Database:
     # returns true if the database has a user with the given email.
     def has_user(self, email: Email) -> bool:
         with self._lock:
-            self._cursor.execute(
+            cursor = self._conn.cursor()
+            cursor.execute(
                 """
                 SELECT auth_key FROM users WHERE email = ?
                 """,
-                (email._string,),
+                (email.string,),
             )
-            value = self._cursor.fetchone()
+            value = cursor.fetchone()
             if value is None:
                 return False
             else:
                 return True
 
     # returns true if the database has an item with the given id.
-    def has_item(self, id: Uuid) -> bool:
+    def has_item(self, identifier: str) -> bool:
         with self._lock:
-            self._cursor.execute(
+            cursor = self._conn.cursor()
+            cursor.execute(
                 """
                 SELECT id FROM items WHERE id = ?
                 """,
-                (id.bytes,),
+                (identifier,),
             )
-            value = self._cursor.fetchone()
+            value = cursor.fetchone()
             if value is None:
                 return False
             else:
@@ -213,54 +217,57 @@ class Database:
     
     # Returns information stored about a user. If this function panics you can
     # guess that the user doesn't exist.
-    def get_user(self, email: Email) -> User:
+    def get_user(self, email: Email) -> User | None:
         with self._lock:
-            self._cursor.execute(
+            cursor = self._conn.cursor()
+            cursor.execute(
                 """
                 SELECT auth_key, private_info, public_key, messages FROM users WHERE email = ?
                 """,
                 (email.string,),
             )
-            value = self._cursor.fetchone()
+            value = cursor.fetchone()
             if value is None:
-                raise Exception(f"user {email} doesn't exist")
+                return None
 
-            self._cursor.execute(
+            cursor.execute(
                 """
                 SELECT description FROM user_descriptions WHERE email = ?
                 """,
                 (email.string,),
             )
-            description_value = self._cursor.fetchone()
+            description_value = cursor.fetchone()
 
             return User(
-                auth_key=Key(int.from_bytes(value["auth_key"])),
+                auth_key=value["auth_key"],
                 private_info=value["private_info"],
-                public_key=Key(int.from_bytes(value["public_key"])),
-                messages=pickle.loads(value["messages"]),
+                public_key=value["public_key"],
+                messages=pickle.loads(str_to_bytes(value["messages"])),
                 description=description_value["description"],
             )
 
     # returns the auth key of the given user or panics if the email doesn't
     # exist.
-    def get_user_auth_key(self, email: Email) -> Key:
+    def get_user_auth_key(self, email: Email) -> str | None:
         with self._lock:
-            self._cursor.execute(
+            cursor = self._conn.cursor()
+            cursor.execute(
                 """
                 SELECT auth_key FROM users WHERE email = ?
                 """,
                 (email.string,),
             )
-            user = self._cursor.fetchone()
+            user = cursor.fetchone()
             if user is None:
-                raise Exception(f"user {email} doesn't exist")
+                return None
 
-            return Key(int.from_bytes(user["auth_key"]))
+            return user["auth_key"]
 
     # returns the emails, descriptions, and public keys of all users in the database.
-    def get_user_emails_descs_pub_keys(self) -> list[tuple[Email, str, Key]]:
+    def get_user_emails_descs_pub_keys(self) -> list[tuple[Email, str, PublicKey]]:
         with self._lock:
-            self._cursor.execute(
+            cursor = self._conn.cursor()
+            cursor.execute(
                 """
                 SELECT users.email, user_descriptions.description, users.public_key
                 FROM users
@@ -268,13 +275,13 @@ class Database:
                     ON users.email = user_descriptions.email
                 """
             )
-            rows = self._cursor.fetchall()
+            rows = cursor.fetchall()
 
             return [
                 (
                     Email(row["email"]),
                     row["description"],
-                    Key(int.from_bytes(row["public_key"]))
+                    PublicKey(row["public_key"])
                 )
                 for row in rows
             ]
@@ -283,65 +290,69 @@ class Database:
     # item doesn't exist. The result of this function contains the actual data
     # of the item, which may be megabytes long. To exclude the actual item data,
     # use `get_item_metadata`.
-    def get_item(self, id: Uuid) -> Item:
+    def get_item(self, identifier: str) -> Item | None:
         with self._lock:
-            self._cursor.execute(
+            cursor = self._conn.cursor()
+            cursor.execute(
                 """
                 SELECT auth_key, contents, release_keys FROM items WHERE id = ?
                 """,
-                (id.bytes,),
+                (identifier,),
             )
-            value = self._cursor.fetchone()
+            value = cursor.fetchone()
             if value is None:
-                raise Exception(f"item {id} doesn't exist")
+                return None
             
             return Item(
-                auth_key=Key(int.from_bytes(value["auth_key"])),
+                auth_key=value["auth_key"],
                 contents=value["contents"],
-                release_keys=pickle.loads(value["release_keys"]),
+                release_keys=pickle.loads(str_to_bytes(value["release_keys"])),
             )
 
     # Returns information stored about an item excluding the contents. If this
     # function panics, the item doesn't exist. "contents" are the actual data
     # of the item which may be megabytes long.
-    def get_item_metadata(self, id: Uuid) -> Item:
+    def get_item_metadata(self, identifier: str) -> Item | None:
         with self._lock:
-            self._cursor.execute(
+            cursor = self._conn.cursor()
+            cursor.execute(
                 """
                 SELECT auth_key, release_keys FROM items WHERE id = ?
                 """,
-                (id.bytes,),
+                (identifier,),
             )
-            value = self._cursor.fetchone()
+            value = cursor.fetchone()
             if value is None:
-                raise Exception(f"item {id} doesn't exist")
+                return None
             
             return Item(
-                auth_key=Key(int.from_bytes(value["auth_key"])),
-                contents=bytes(),
-                release_keys=pickle.loads(value["release_keys"]),
+                auth_key=value["auth_key"],
+                contents="",
+                release_keys=pickle.loads(str_to_bytes(value["release_keys"])),
             )
 
     # Returns the authentication key of an item.
-    def get_item_auth_key(self, id: Uuid) -> Key:
+    def get_item_auth_key(self, identifier: str) -> str | None:
         with self._lock:
-            self._cursor.execute(
+            cursor = self._conn.cursor()
+            cursor.execute(
                 """
                 SELECT auth_key FROM items WHERE id = ?
                 """,
-                (id.bytes,),
+                (identifier,),
             )
-            value = self._cursor.fetchone()
+            value = cursor.fetchone()
             if value is None:
-                raise Exception(f"item {id} doesn't exist")
+                raise Exception(f"item {identifier} doesn't exist")
             
-            return Key(int.from_bytes(value["auth_key"]))
+            return value["auth_key"]
 
     # Removes the info about a user from the database. This function does not
     # panic if the user doesn't exist.
     def remove_user(self, email: Email):
         with self._lock:
-            self._cursor.execute(
+            cursor = self._conn.cursor()
+            cursor.execute(
                 """
                 DELETE FROM users WHERE email = ?
                 """,
@@ -351,12 +362,13 @@ class Database:
     
     # Removes info about an item from the database. This function does not
     # panic if the item doesn't exist.
-    def remove_item(self, id: Uuid):
+    def remove_item(self, identifier: str):
         with self._lock:
-            self._cursor.execute(
+            cursor = self._conn.cursor()
+            cursor.execute(
                 """
                 DELETE FROM items WHERE id = ?
                 """,
-                (id.bytes,),
+                (identifier,),
             )
             self._conn.commit()

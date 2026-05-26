@@ -1,104 +1,125 @@
-from uuid import UUID as Uuid, uuid4
+from uuid import uuid4
+from datetime import datetime
 
 from lib.socket_wrapper import ServerConnection
 from lib.database import Database, User, Item, ReleaseKey
 from lib.request_response import *
 from lib.email import Email, InvalidEmailError
-from lib.key import Key, InvalidKeyError
 from lib.encryption import encrypt
+from lib.hashing import hash_string
+from lib.encode_default import str_to_bytes, bytes_to_str
 
 
 class Client:
     conn: ServerConnection
-    _logged_into_email: Email | None
+    logged_into_email: Email | None
 
     def __init__(self, conn: ServerConnection):
         self.conn = conn
-        self._logged_into_email = None
+        self.logged_into_email = None
+
 
 def handle_next_request(db: Database, client: Client):
-    request = client.conn.recv()
-    while request is None:
+    try:
         request = client.conn.recv()
+        while request is None:
+            request = client.conn.recv()
 
-    if request["type"] == "SignupRequest":
-        handle_signup_request(db, client, SignupRequest(**request))
-    if request["type"] == "LoginRequest":
-        handle_login_request(db, client, LoginRequest(**request))
-    if request["type"] == "FetchRequest":
-        handle_fetch_request(db, client, FetchRequest(**request))
-    if request["type"] == "PushRequest":
-        handle_push_request(db, client, PushRequest(**request))
-    if request["type"] == "SendRequest":
-        handle_send_request(db, client, SendRequest(**request))
-    if request["type"] == "ItemRequest":
-        handle_item_request(db, client, ItemRequest(**request))
-    if request["type"] == "CreateItemRequest":
-        handle_create_item_request(db, client, CreateItemRequest(**request))
-    if request["type"] == "EncryptItemRequest":
-        handle_encrypt_item_request(db, client, EncryptItemRequest(**request))
-    if request["type"] == "ReleaseItemRequest":
-        handle_release_item_request(db, client, ReleaseItemRequest(**request))
+        if not isinstance(request, dict):
+            return
+
+        req_type = request.get("type")
+        if req_type is None:
+            return
+
+        if req_type == "SignupRequest":
+            handle_signup_request(db, client, SignupRequest(**request))
+
+        elif req_type == "LoginRequest":
+            handle_login_request(db, client, LoginRequest(**request))
+
+        elif req_type == "FetchRequest":
+            handle_fetch_request(db, client, FetchRequest(**request))
+
+        elif req_type == "PushRequest":
+            handle_push_request(db, client, PushRequest(**request))
+
+        elif req_type == "SendRequest":
+            handle_send_request(db, client, SendRequest(**request))
+
+        elif req_type == "ItemRequest":
+            handle_item_request(db, client, ItemRequest(**request))
+
+        elif req_type == "CreateItemRequest":
+            handle_create_item_request(db, client, CreateItemRequest(**request))
+
+        elif req_type == "EncryptItemRequest":
+            handle_encrypt_item_request(db, client, EncryptItemRequest(**request))
+
+        elif req_type == "ReleaseItemRequest":
+            handle_release_item_request(db, client, ReleaseItemRequest(**request))
+
+    except Exception as e:
+        # Prevent silent thread death → avoids "stalls"
+        print("SERVER HANDLER CRASH:", e)
+
 
 def handle_signup_request(db: Database, client: Client, request: SignupRequest):
     try:
         email = Email(request.email)
-        auth_key = Key(request.auth_key)
-        pub_key = Key(request.public_key)
     except InvalidEmailError:
-        client.conn.send(SignupResponse(is_succees=False, email_is_taken=False))
-        return
-    except InvalidKeyError:
-        client.conn.send(SignupResponse(is_succees=False, email_is_taken=False))
+        client.conn.send(SignupResponse(is_success=False, email_is_taken=False))
         return
 
     if db.has_user(email=email):
-        client.conn.send(SignupResponse(is_succees=False, email_is_taken=True))
+        client.conn.send(SignupResponse(is_success=False, email_is_taken=True))
         return
 
     db.insert_user(
         email,
         User(
-            auth_key=auth_key,
-            private_info=request.private_info.encode("utf-8"),
-            public_key=pub_key,
+            auth_key=hash_string(request.auth_key),
+            private_info=request.private_info,
+            public_key=request.public_key,
             description="",
             messages=[]
         ),
         should_already_exist=False
     )
-    client._logged_into_email = email
-    client.conn.send(SignupResponse(is_succees=True, email_is_taken=False))
+
+    client.logged_into_email = email
+    client.conn.send(SignupResponse(is_success=True, email_is_taken=False))
+
 
 def handle_login_request(db: Database, client: Client, request: LoginRequest):
     try:
         email = Email(request.email)
-        auth_key = Key(request.auth_key)
-    except:
-        client.conn.send(LoginResponse(is_succees=False, incorrect_password=False, user_doesnt_exist=False))
+    except InvalidEmailError:
+        client.conn.send(LoginResponse(False, False, False))
         return
 
     if not db.has_user(email=email):
-        client.conn.send(LoginResponse(is_succees=False, incorrect_password=False, user_doesnt_exist=True))
+        client.conn.send(LoginResponse(False, False, True))
         return
 
     db_auth_key = db.get_user_auth_key(email)
-    if auth_key != db_auth_key:
-        client.conn.send(LoginResponse(is_succees=False, incorrect_password=True, user_doesnt_exist=False))
+    if hash_string(request.auth_key) != db_auth_key:
+        client.conn.send(LoginResponse(False, True, False))
         return
 
-    # Its bad practice to make the authentication success branch the normal
-    # branch and the failure branch with early returns, but its very funny and
-    # this is not a serious project so fuck it.
+    client.logged_into_email = email
+    client.conn.send(LoginResponse(True, False, False))
 
-    client._logged_into_email = email
-    client.conn.send(LoginResponse(is_succees=True, incorrect_password=False, user_doesnt_exist=False))
 
-def handle_fetch_request(db: Database, client: Client, request: FetchRequest):
-    if client._logged_into_email is None:
+# ============================================================
+# FETCH
+# ============================================================
+
+def handle_fetch_request(db: Database, client: Client, _request: FetchRequest):
+    if client.logged_into_email is None:
         client.conn.send(FetchResponse(
             is_success=False,
-            isnt_logged_in=True,
+            not_logged_in=True,
             messages=[],
             private_info="",
             user_descriptions=[],
@@ -107,12 +128,11 @@ def handle_fetch_request(db: Database, client: Client, request: FetchRequest):
         ))
         return
 
-    try:
-        db_user = db.get_user(client._logged_into_email)
-    except:
+    db_user = db.get_user(client.logged_into_email)
+    if db_user is None:
         client.conn.send(FetchResponse(
             is_success=False,
-            isnt_logged_in=False,
+            not_logged_in=False,
             messages=[],
             private_info="",
             user_descriptions=[],
@@ -121,156 +141,165 @@ def handle_fetch_request(db: Database, client: Client, request: FetchRequest):
         ))
         return
 
-    user_emails_descs_pub_keys = db.get_user_emails_descs_pub_keys()
+    users = db.get_user_emails_descs_pub_keys()
 
     client.conn.send(FetchResponse(
         is_success=True,
-        isnt_logged_in=False,
-        messages=[message.decode("utf-8") for message in db_user.messages],
-        private_info=db_user.private_info.decode("utf-8"),
-        user_emails=[user[0].string for user in user_emails_descs_pub_keys],
-        user_descriptions=[user[1] for user in user_emails_descs_pub_keys],
-        user_public_keys=[str(user[2].value) for user in user_emails_descs_pub_keys],
+        not_logged_in=False,
+        messages=db_user.messages,
+        private_info=db_user.private_info,
+        user_emails=[u[0].string for u in users],
+        user_descriptions=[u[1] for u in users],
+        user_public_keys=[u[2] for u in users],
     ))
 
+
+# ============================================================
+# PUSH
+# ============================================================
+
 def handle_push_request(db: Database, client: Client, request: PushRequest):
-    if client._logged_into_email is None:
-        client.conn.send(PushResponse(is_succees=False, isnt_logged_in=True))
+    if client.logged_into_email is None:
+        client.conn.send(PushResponse(False, True))
         return
 
-    try:
-        db_user = db.get_user(client._logged_into_email)
-        db_user.private_info = request.private_info.encode("utf-8")
-        db_user.messages = [m.encode("utf-8") for m in request.messages]
-        db.insert_user(email=client._logged_into_email, value=db_user, should_already_exist=True)
+    db_user = db.get_user(client.logged_into_email)
+    if db_user is None:
+        client.conn.send(PushResponse(False, False))
+        return
 
-        client.conn.send(PushResponse(is_succees=True, isnt_logged_in=False))
-    except:
-        client.conn.send(PushResponse(is_succees=False, isnt_logged_in=False))
+    db_user.private_info = str_to_bytes(request.private_info)
+    db_user.messages = request.messages
 
+    db.insert_user(client.logged_into_email, db_user, should_already_exist=True)
+
+    client.conn.send(PushResponse(True, False))
+
+
+# ============================================================
+# SEND MESSAGE
+# ============================================================
 
 def handle_send_request(db: Database, client: Client, request: SendRequest):
-    if client._logged_into_email is None:
-        client.conn.send(SendResponse(is_succees=False, invalid_email=False, user_doesnt_exist=False, not_logged_in=True))
+    if client.logged_into_email is None:
+        client.conn.send(SendResponse(False, False, False, True))
         return
 
     try:
         target_email = Email(request.target_email)
-        db_user = db.get_user(target_email)
     except InvalidEmailError:
-        client.conn.send(SendResponse(is_succees=False, user_doesnt_exist=False, invalid_email=True, not_logged_in=False))
-        return
-    except:
-        client.conn.send(SendResponse(is_succees=False, user_doesnt_exist=True, invalid_email=False, not_logged_in=False))
+        client.conn.send(SendResponse(False, False, True, False))
         return
 
-    db_user.messages.append(request.content.encode("utf-8"))
+    db_user = db.get_user(target_email)
+    if db_user is None:
+        client.conn.send(SendResponse(False, True, False, False))
+        return
+
+    db_user.messages.append(request.content)
     db.insert_user(target_email, db_user, should_already_exist=True)
 
-    client.conn.send(SendResponse(is_succees=True, invalid_email=False, user_doesnt_exist=False, not_logged_in=False))
+    client.conn.send(SendResponse(True, False, False, False))
+
+
+# ============================================================
+# ITEM SYSTEM
+# ============================================================
 
 def handle_item_request(db: Database, client: Client, request: ItemRequest):
-    try:
-        id = Uuid(request.id)
-        auth_key = Key(request.auth_key)
-        db_auth_key = db.get_item_auth_key(id)
-    except:
-        client.conn.send(ItemResponse(
-            is_success=False,
-            wrong_key=False,
-            contents="",
-            release_key_contents=[]
-        ))
+    db_auth_key = db.get_item_auth_key(request.id)
+
+    if db_auth_key is None:
+        client.conn.send(ItemResponse(False, False, "", []))
         return
 
-    if auth_key.hash() != db_auth_key:
-        client.conn.send(ItemResponse(
-            is_success=False,
-            wrong_key=True,
-            contents="",
-            release_key_contents=[]
-        ))
+    if hash_string(request.auth_key) != db_auth_key:
+        client.conn.send(ItemResponse(False, True, "", []))
         return
 
-    db_item = db.get_item(id)
+    db_item = db.get_item(request.id)
+    if db_item is None:
+        client.conn.send(ItemResponse(False, False, "", []))
+        return
 
     client.conn.send(ItemResponse(
         is_success=True,
         wrong_key=False,
-        contents=db_item.contents.decode("latin-1"),
-        release_key_contents=[release_key.info.decode("utf-8") for release_key in db_item.release_keys]
+        contents=db_item.contents,
+        release_key_contents=[r.info for r in db_item.release_keys]
     ))
+
 
 def handle_create_item_request(db: Database, client: Client, request: CreateItemRequest):
-    try:
-        auth_key = Key(request.auth_key)
-        id = uuid4()
-    except:
-        client.conn.send(CreateItemResponse(is_success=False, id=""))
-        return
+    item_id = str(uuid4())
 
-    db.insert_item(id, Item(auth_key=auth_key.hash(), contents=request.contents.encode("latin-1"), release_keys=[]), should_already_exist=False)
+    db.insert_item(
+        item_id,
+        Item(
+            auth_key=hash_string(request.auth_key),
+            contents=request.contents,
+            release_keys=[]
+        ),
+        should_already_exist=False
+    )
 
-    client.conn.send(CreateItemResponse(is_success=True, id=str(id)))
+    client.conn.send(CreateItemResponse(True, item_id))
+
 
 def handle_encrypt_item_request(db: Database, client: Client, request: EncryptItemRequest):
-    try:
-        id = Uuid(request.id)
-        auth_key = Key(request.auth_key)
-        db_auth_key = db.get_item_auth_key(id)
-    except:
-        client.conn.send(EncryptItemResponse(
-            is_success=False,
-            wrong_key=False,
-        ))
+    db_auth_key = db.get_item_auth_key(request.id)
+
+    if db_auth_key is None:
+        client.conn.send(EncryptItemResponse(False, False))
         return
 
-    if auth_key.hash() != db_auth_key:
-        client.conn.send(EncryptItemResponse(
-            is_success=False,
-            wrong_key=True,
-        ))
+    if hash_string(request.auth_key) != db_auth_key:
+        client.conn.send(EncryptItemResponse(False, True))
         return
 
-    from cryptography.hazmat.primitives.serialization import load_pem_public_key
-    db_item = db.get_item(id)
+    db_item = db.get_item(request.id)
+    if db_item is None:
+        client.conn.send(EncryptItemResponse(False, False))
+        return
+
     prefix = request.prefix.encode("utf-8")
-    pub_key = load_pem_public_key(request.public_key.encode("utf-8"))
-    encrypted = encrypt(db_item.contents, pub_key)
-    db_item.contents = prefix + encrypted
-    db.insert_item(id, db_item, should_already_exist=True)
 
-    client.conn.send(EncryptItemResponse(
-        is_success=True,
-        wrong_key=False,
-    ))
+    raw = db_item.contents
+    if isinstance(raw, str):
+        raw_bytes = str_to_bytes(raw)
+    else:
+        raw_bytes = raw
+
+    encrypted = encrypt(request.public_key, raw_bytes)
+
+    db_item.contents = prefix + encrypted
+    db.insert_item(request.id, db_item, should_already_exist=True)
+
+    client.conn.send(EncryptItemResponse(True, False))
+
 
 def handle_release_item_request(db: Database, client: Client, request: ReleaseItemRequest):
-    try:
-        id = Uuid(request.id)
-        auth_key = Key(request.auth_key)
-        db_auth_key = db.get_item_auth_key(id)
-    except:
-        client.conn.send(ReleaseItemResponse(
-            is_success=False,
-            wrong_key=False,
-        ))
+    db_auth_key = db.get_item_auth_key(request.id)
+
+    if db_auth_key is None:
+        client.conn.send(ReleaseItemResponse(False, False))
         return
 
-    if auth_key.hash() != db_auth_key:
-        client.conn.send(ReleaseItemResponse(
-            is_success=False,
-            wrong_key=True,
-        ))
+    if hash_string(request.auth_key) != db_auth_key:
+        client.conn.send(ReleaseItemResponse(False, True))
         return
 
-    db_item = db.get_item(id)
-    from datetime import datetime
+    db_item = db.get_item(request.id)
+    if db_item is None:
+        client.conn.send(ReleaseItemResponse(False, False))
+        return
+
     expires = datetime.fromisoformat(request.expires)
-    db_item.release_keys.append(ReleaseKey(info=request.info.encode("utf-8"), expires=expires))
-    db.insert_item(id, db_item, should_already_exist=True)
 
-    client.conn.send(ReleaseItemResponse(
-        is_success=True,
-        wrong_key=False,
-    ))
+    db_item.release_keys.append(
+        ReleaseKey(info=request.info, expires=expires)
+    )
+
+    db.insert_item(request.id, db_item, should_already_exist=True)
+
+    client.conn.send(ReleaseItemResponse(True, False))
