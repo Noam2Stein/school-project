@@ -26,9 +26,10 @@ with ThreadPoolExecutor(max_workers=10) as thread_pool:
             clients.append(Client(conn))
 
         for client in clients:
-            if not client.conn.has_input():
+            if getattr(client, "is_handling", False) or not client.conn.has_input():
                 continue
 
+            client.is_handling = True
             thread_pool.submit(handle_next_request, db, client)
 
         sleep(0.001)

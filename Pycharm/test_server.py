@@ -53,31 +53,22 @@ class Check:
         print(f"  PASS  {label}")
 
 
+from lib.encryption import keypair, decrypt, PrivateKey, PublicKey
+from lib.encode_default import str_to_bytes, bytes_to_str
+
 def decrypt_item(blob: bytes, priv_key) -> bytes:
-    encrypted_key = blob[:256]
-    nonce = blob[256:268]
-    ciphertext = blob[268:]
-
-    aes_key = priv_key.decrypt(
-        encrypted_key,
-        padding.OAEP(
-            mgf=padding.MGF1(algorithm=hashes.SHA256()),
-            algorithm=hashes.SHA256(),
-            label=None,
-        ),
-    )
-    return AESGCM(aes_key).decrypt(nonce, ciphertext, None)
+    blob_str = blob.decode("latin-1")
+    if ":" in blob_str:
+        blob_str = blob_str.split(":", 1)[1]
+    encrypted_bytes = str_to_bytes(blob_str.strip())
+    return decrypt(priv_key, encrypted_bytes)
 
 
 # ============================================================
-# RSA for EncryptItemRequest
+# Keypair for EncryptItemRequest
 # ============================================================
 
-rsa_priv = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-rsa_pub = rsa_priv.public_key().public_bytes(
-    serialization.Encoding.PEM,
-    serialization.PublicFormat.SubjectPublicKeyInfo,
-).decode("utf-8")
+rsa_priv, rsa_pub = keypair("correct horse battery staple")
 
 
 # ============================================================
@@ -105,8 +96,11 @@ def server_loop():
                     clients.append(Client(conn))
 
             for c in list(clients):
-                if c.conn.has_input():
-                    pool.submit(handle_next_request, db, c)
+                if getattr(c, "is_handling", False) or not c.conn.has_input():
+                    continue
+
+                c.is_handling = True
+                pool.submit(handle_next_request, db, c)
 
             sleep(0.001)
 
@@ -239,7 +233,7 @@ check.ok("message delivered", "hello b" in r.messages)
 
 print("\n=== Create Item ===")
 
-conn_a.send(CreateItemRequest("data", "777777"))
+conn_a.send(CreateItemRequest(bytes_to_str(b"data"), "777777"))
 item_id = CreateItemResponse(**recv(conn_a)).id
 
 check.ok("item id exists", isinstance(item_id, str))
@@ -280,7 +274,7 @@ r = ItemResponse(**recv(conn_a))
 raw = r.contents.encode("latin-1")
 check.ok("prefix applied", raw.startswith(b"PREFIX:"))
 
-decrypted = decrypt_item(raw[8:], rsa_priv)
+decrypted = decrypt_item(raw, rsa_priv)
 check.ok("decrypt ok", decrypted == b"data")
 
 

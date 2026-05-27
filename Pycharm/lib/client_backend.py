@@ -1,40 +1,177 @@
+from __future__ import annotations
+
+import json
+from dataclasses import asdict, dataclass
 from uuid import UUID as UUID
 from datetime import datetime
 from typing import Literal
 
 from lib.socket_wrapper import try_connect_to_server, ClientConnection
 from lib.request_response import (
-    SignupRequest, SignupResponse,
-    LoginRequest, LoginResponse,
-    FetchRequest, FetchResponse,
+    Request,
+
+    SignupRequest,
+    LoginRequest,
+    FetchRequest,
     PushRequest,
-    CreateItemRequest, CreateItemResponse,
-    ItemRequest, ItemResponse,
+    SendRequest,
+    ItemRequest,
+    CreateItemRequest,
+    EncryptItemRequest,
     ReleaseItemRequest,
+
+    PublicKey,
 )
-from lib.encryption import keypair, encrypt, decrypt, PublicKey, PrivateKey
+from lib.encryption import (
+    keypair,
+    encrypt,
+    decrypt,
+    PrivateKey,
+)
 from lib.hashing import hash_string
 from lib.task import Task
-from lib.email import Email
+from lib.email import Email, InvalidEmailError
+from lib.encode_default import bytes_to_str, str_to_bytes
 
 
+@dataclass
 class _PrivateInformation:
-    _private_key: PrivateKey
-    _item_ids: list[str]
-    _item_names: list[str]
-    _item_auth_keys: list[str]
+    item_ids: list[str]
+    item_auth_keys: list[str]
+    item_names: list[str]
+    item_encryption_methods: list[str]
+    item_sizes: list[int]
+
+    def __init__(self):
+        self.item_ids = []
+        self.item_auth_keys = []
+        self.item_names = []
+        self.item_encryption_methods = []
+        self.item_sizes = []
+
+
+class _ItemMetadata:
+    id: str
+    name: str
+    auth_key: str
+    encryption_method: str
+    is_released: bool
+    released_until: datetime | None
+    size: int
+
+    def __init__(
+        self,
+        id: str,
+        name: str,
+        auth_key: str,
+        encryption_method: str,
+        size: int = 0,
+    ):
+        self.id = id
+        self.name = name
+        self.auth_key = auth_key
+        self.encryption_method = encryption_method
+        self.is_released = False
+        self.released_until = None
+        self.size = size
+
+
+class _InvitationMetadata:
+    id: str
+    name: str
+    auth_key: str
+    encryption_method: str
+    size: int
+
+    def __init__(
+        self,
+        id: str,
+        name: str,
+        auth_key: str,
+        encryption_method: str,
+        size: int = 0,
+    ):
+        self.id = id
+        self.name = name
+        self.auth_key = auth_key
+        self.encryption_method = encryption_method
+        self.size = size
 
 
 class _AccountInfo:
     email: Email
     auth_key: str
+
+    private_key: PrivateKey
+    public_key: PublicKey
+
     private_info: _PrivateInformation
+
+    item_metadata: list[_ItemMetadata]
+    invitation_metadata: list[_InvitationMetadata]
+
+    def __init__(
+        self,
+        email: Email,
+        auth_key: str,
+        private_key: PrivateKey,
+        public_key: PublicKey,
+    ):
+        self.email = email
+        self.auth_key = auth_key
+
+        self.private_key = private_key
+        self.public_key = public_key
+
+        self.private_info = _PrivateInformation()
+
+        self.item_metadata = []
+        self.invitation_metadata = []
 
 
 class GlobalInfo:
     global_user_emails: list[str] | None
     global_user_pub_keys: list[PublicKey] | None
     global_user_descriptions: list[str] | None
+
+
+def _serialize_private_info(
+    private_info: _PrivateInformation,
+    public_key: PublicKey,
+) -> str:
+    serialized = json.dumps(asdict(private_info)).encode()
+
+    encrypted = encrypt(
+        public_key,
+        serialized,
+    )
+
+    return bytes_to_str(encrypted)
+
+
+def _deserialize_private_info(
+    serialized: str,
+    private_key: PrivateKey,
+) -> _PrivateInformation | Literal["corrupt"]:
+    try:
+        decrypted = decrypt(
+            private_key,
+            str_to_bytes(serialized),
+        )
+
+        loaded = json.loads(decrypted.decode())
+
+        result = _PrivateInformation()
+
+        result.item_ids = loaded.get("item_ids", [])
+        result.item_auth_keys = loaded.get("item_auth_keys", [])
+        result.item_names = loaded.get("item_names", [])
+        result.item_encryption_methods = loaded.get("item_encryption_methods", [])
+        result.item_sizes = loaded.get("item_sizes", [])
+
+        return result
+    except Exception:
+        return "corrupt"
 
 
 class ClientBackend:
@@ -49,125 +186,1011 @@ class ClientBackend:
         self._global_info = None
         self._account = None
 
-        # fetch information from the server in the background. This needs to be called
-        # when you want to refresh information. This is only `done` for a single call. After
-        # the first `done` call, this function will try to fetch again.
-        def fetch_from_server(self) -> Literal["wait", "not connected", "done", "unknown server error"]:
-            if self._task_name is None:
-                self._task = Task()
+    def _connect(self) -> bool:
+        if self._conn is not None:
+            return True
 
-        # returns the global user list from the last fetch call. This returns immediatly
-        # and performs nothing in the background.
-        def global_user_emails(self) -> list[str] | Literal["havent fetched"]:
-            raise RuntimeError("todo")
+        self._conn = try_connect_to_server()
 
-        # returns the description of a given user from the last fetch call. This returns
-        # immediatly and doesnt do anything in the background.
-        def global_user_description(self, email: str) -> str | Literal["havent fetched", "doesnt exist"]:
-            raise RuntimeError("todo")
+        return self._conn is not None
 
-        # Logs in to an account in the background. This is considered `done` as long as
-        # the client is logged in to the email passed to this function. This automatically syncs
-        # or "fetches" with the server.
-        def login(self, email: str, password: str) -> Literal[
-            "wait", "done", "not connected", "wrong password", "unknown server error"]:
-            raise RuntimeError("todo")
+    def _request(
+        self,
+        request: Request,
+    ) -> dict | Literal["not connected"]:
+        if not self._connect():
+            return "not connected"
 
-        # Creates a new account in the background. This is considered done for a single call, before
-        # trying again and failing with already exists. This automatically syncs or "fetches" with the server.
-        def signup(self, email: str, password: str, description: str) -> Literal[
-            "wait", "done", "already exists", "invalid password", "not connected", "unknown server error"]:
-            raise RuntimeError("todo")
+        self._conn.send(request)
 
-        # Returns the email this client is currently logged in as. This is an error even if
-        # the login is in progress right now.
-        def logged_into_email(self) -> str | Literal["not logged in"]:
-            raise RuntimeError("todo")
+        while True:
+            response = self._conn.recv()
 
-        # Returns a list of the items of the current account. This is not in the background.
-        def my_item_ids(self) -> list[UUID] | Literal["not logged in", "havent fetched"]:
-            raise RuntimeError("todo")
+            if response is not None:
+                return response
 
-        # Returns a list of items other users have invited this user to join. This
-        # gives this user access to the item just like items of the user `my_item_ids` and
-        # can be moved there using `join_item`. This is not in the background. The only
-        # difference is that these items arent encrypted by this user.
-        def my_item_invitation_ids(self) -> list[UUID] | Literal["not logged in", "havent fetched"]:
-            raise RuntimeError("todo")
+    def fetch_from_server(self) -> Literal[
+        "wait",
+        "not connected",
+        "done",
+        "unknown server error",
+    ]:
+        if self._account is None:
+            return "unknown server error"
 
-        # Returns the name of an item. This should be a file name that also indicates the file type.
-        # If a user wants the file type to be hidden they can always zip the item. This is not in the
-        # background. This also works for items from `my_item_invitation_ids`.
-        def item_name(self, id: UUID) -> str | Literal["not logged in", "havent fetched", "doesnt exist"]:
-            raise RuntimeError("todo")
+        if self._task is not None:
+            if self._task.name != "fetch":
+                return "wait"
 
-        # Returns the display name of the item's encryption method. This is not in the
-        # background. This also works for items from `my_item_invitation_ids`.
-        def item_encryption_method(self, id: UUID) -> str | Literal["not logged in", "havent fetched", "doesnt exist"]:
-            raise RuntimeError("todo")
+            if self._task.is_pending():
+                return "wait"
 
-        # Returns the file size of an item. This is not in the
-        # background. This also works for items from `my_item_invitation_ids`.
-        def item_size(self, id: UUID) -> int | Literal["not logged in", "havent fetched", "doesnt exist"]:
-            raise RuntimeError("todo")
+            result = self._task.get()
+            self._task = None
 
-        # Checks if the item is locked, not including by ourselves from the last fetch.
-        def item_is_locked(self, id: UUID) -> bool | Literal[
-            "not logged in", "havent fetched", "doesnt exist", "corrupt"]:
-            raise RuntimeError("todo")
+            return result
 
-        # Tries to fetch and decrypt the item in the background. The data only stays in
-        # memory for a single call, after the first call returning bytes, it tries again from scratch.
-        # This works whether or not this user has released their key.
-        def read_item(self, id: UUID) -> bytes | Literal[
-            "wait", "not connected", "not logged in", "havent fetched", "doesnt exist", "locked", "corrupt", "unknown server error"]:
-            raise RuntimeError("todo")
+        def run() -> Literal[
+            "done",
+            "not connected",
+            "unknown server error",
+        ]:
+            response = self._request(FetchRequest())
 
-        # Gives a release key to the server in the background. Its the server's job to delete
-        # the key after `until`.
-        def release_item(self, id: UUID, until: datetime) -> Literal[
-            "wait", "done", "not logged in", "havent fetched", "doesnt exist", "corrupt", "havent joined", "unknown server error"]:
-            raise RuntimeError("todo")
+            if response == "not connected":
+                return "not connected"
 
-        # Moves an item from the list of items we got an invitation to, to being one of our items.
-        # The only behavioural change this has is that it encrypts the item by this user.
-        def join_item(self, id: UUID) -> Literal[
-            "wait", "done", "not logged in", "havent fetched", "doesnt exist", "corrupt", "unknown server error"]:
-            raise RuntimeError("todo")
+            if response["type"] != "FetchResponse":
+                return "unknown server error"
 
-        # Removes an item from the invitation list in the background.
-        def reject_item(self, id: UUID) -> Literal[
-            "wait", "done", "not logged in", "havent fetched", "doesnt exist", "corrupt", "unknown server error"]:
-            raise RuntimeError("todo")
+            if not response["is_success"]:
+                return "unknown server error"
 
-        # Returns true if based on the last fetch this user released their key.
-        def has_released_item(self, id: UUID) -> bool | Literal[
-            "not logged in", "havent fetched", "doesnt exist", "corrupt"]:
-            raise RuntimeError("todo")
+            private_info = _deserialize_private_info(
+                response["private_info"],
+                self._account.private_key,
+            )
 
-        # Based on the last fetch returns the time limit of the user's release key, only if they have one.
-        def released_item_timelimit(self, id: UUID) -> datetime | Literal[
-            "not logged in", "havent fetched", "doesnt exist", "corrupt", "havent released"]:
-            raise RuntimeError("todo")
+            if private_info == "corrupt":
+                return "unknown server error"
 
-        # Creates a new item in the background. This is considered done only for a single call,
-        # after the first call, itll try to create another item with the same name.
-        def create_item(self, name: str, data: bytes) -> Literal[
-            "wait", "done", "not logged in", "corrupt", "not connected", "unknown server error"]:
-            raise RuntimeError("todo")
+            self._account.private_info = private_info
 
-        # Invites another user to the given item in the background. This gives that
-        # user full permissions to delete or encrypt the item.
-        def invite_user_to_item(self, user_email: str, item_id: UUID) -> Literal[
-            "wait", "done", "not logged in", "corrupt", "not connected", "item doesnt exist", "user doesnt exist", "unknown server error"]:
-            raise RuntimeError("todo")
+            # Rebuild item_metadata from the decrypted private_info
+            self._account.item_metadata = []
+            for i in range(len(private_info.item_ids)):
+                item_id = private_info.item_ids[i]
+                auth_key = private_info.item_auth_keys[i]
+                
+                # Fetch optional metadata with safe fallbacks
+                name = private_info.item_names[i] if i < len(private_info.item_names) else "unknown"
+                method = private_info.item_encryption_methods[i] if i < len(private_info.item_encryption_methods) else "plain"
+                size = private_info.item_sizes[i] if i < len(private_info.item_sizes) else 0
 
-        # Deletes an item for everybody involved in the background.
-        def delete_item(self, id: UUID) -> Literal[
-            "wait", "done", "not logged in", "doesnt exist", "corrupt", "not connected", "unknown server error"]:
-            raise RuntimeError("todo")
+                self._account.item_metadata.append(_ItemMetadata(
+                    id=item_id,
+                    name=name,
+                    auth_key=auth_key,
+                    encryption_method=method,
+                    size=size,
+                ))
 
-        # Leaves an item releasing our key forever in the background.
-        def leave_and_release_item(self, id: UUID) -> Literal[
-            "wait", "done", "not logged in", "doesnt exist", "corrupt", "not connected", "unknown server error"]:
-            raise RuntimeError("todo")
+            global_info = GlobalInfo()
+            global_info.global_user_emails = response["user_emails"]
+            global_info.global_user_pub_keys = response["user_public_keys"]
+            global_info.global_user_descriptions = response["user_descriptions"]
+
+            self._global_info = global_info
+
+            self._account.invitation_metadata = []
+
+            for message in response["messages"]:
+                try:
+                    decrypted = decrypt(
+                        self._account.private_key,
+                        str_to_bytes(message),
+                    )
+
+                    loaded = json.loads(decrypted.decode())
+
+                    invitation = _InvitationMetadata(
+                        loaded["item_id"],
+                        loaded["item_name"],
+                        loaded["item_auth_key"],
+                        loaded["item_encryption_method"],
+                        loaded.get("item_size", 0),
+                    )
+
+                    self._account.invitation_metadata.append(invitation)
+                except Exception:
+                    continue
+
+            self._request(PushRequest(
+                private_info=response["private_info"],
+                messages=[],
+            ))
+
+            return "done"
+
+        self._task = Task("fetch", run)
+
+        return "wait"
+
+    def global_user_emails(self) -> list[str] | Literal["havent fetched"]:
+        if self._global_info is None:
+            return "havent fetched"
+
+        if self._global_info.global_user_emails is None:
+            return "havent fetched"
+
+        return self._global_info.global_user_emails
+
+    def global_user_description(
+        self,
+        email: str,
+    ) -> str | Literal["havent fetched", "doesnt exist"]:
+        if self._global_info is None:
+            return "havent fetched"
+
+        if self._global_info.global_user_emails is None:
+            return "havent fetched"
+
+        if self._global_info.global_user_descriptions is None:
+            return "havent fetched"
+
+        if email not in self._global_info.global_user_emails:
+            return "doesnt exist"
+
+        index = self._global_info.global_user_emails.index(email)
+
+        return self._global_info.global_user_descriptions[index]
+
+    def login(self, email: str, password: str) -> Literal[
+        "wait",
+        "done",
+        "not connected",
+        "wrong password",
+        "unknown server error",
+    ]:
+        if self._task is not None:
+            if self._task.name != "login":
+                return "wait"
+
+            if self._task.is_pending():
+                return "wait"
+
+            result = self._task.get()
+            self._task = None
+
+            return result
+
+        def run() -> Literal[
+            "done",
+            "not connected",
+            "wrong password",
+            "unknown server error",
+        ]:
+            auth_key = hash_string(password)
+
+            response = self._request(LoginRequest(
+                email=email,
+                auth_key=auth_key,
+            ))
+
+            if response == "not connected":
+                return "not connected"
+
+            if response["type"] != "LoginResponse":
+                return "unknown server error"
+
+            if not response["is_success"]:
+                if response["incorrect_password"]:
+                    return "wrong password"
+
+                return "unknown server error"
+
+            private_key, public_key = keypair(password)
+
+            self._account = _AccountInfo(
+                Email(email),
+                auth_key,
+                private_key,
+                public_key,
+            )
+
+            return "done"
+
+        self._task = Task("login", run)
+
+        return "wait"
+
+    def signup(self, email: str, password: str, description: str) -> Literal[
+        "wait",
+        "done",
+        "already exists",
+        "invalid password",
+        "not connected",
+        "unknown server error",
+    ]:
+        if len(password) < 4:
+            return "invalid password"
+
+        try:
+            validated_email = Email(email)
+        except InvalidEmailError:
+            return "invalid password"
+
+        if self._task is not None:
+            if self._task.name != "signup":
+                return "wait"
+
+            if self._task.is_pending():
+                return "wait"
+
+            result = self._task.get()
+            self._task = None
+
+            return result
+
+        def run() -> Literal[
+            "done",
+            "already exists",
+            "not connected",
+            "unknown server error",
+        ]:
+            auth_key = hash_string(password)
+
+            private_key, public_key = keypair(password)
+
+            account = _AccountInfo(
+                validated_email,
+                auth_key,
+                private_key,
+                public_key,
+            )
+
+            serialized_private_info = _serialize_private_info(
+                account.private_info,
+                public_key,
+            )
+
+            response = self._request(SignupRequest(
+                email=email,
+                auth_key=auth_key,
+                private_info=serialized_private_info,
+                public_key=public_key,
+            ))
+
+            if response == "not connected":
+                return "not connected"
+
+            if response["type"] != "SignupResponse":
+                return "unknown server error"
+
+            if not response["is_success"]:
+                if response["email_is_taken"]:
+                    return "already exists"
+
+                return "unknown server error"
+
+            self._account = account
+
+            return "done"
+
+        self._task = Task("signup", run)
+
+        return "wait"
+
+    def logged_into_email(self) -> str | Literal["not logged in"]:
+        if self._account is None:
+            return "not logged in"
+
+        return self._account.email.string
+
+    def my_item_ids(
+        self,
+    ) -> list[UUID] | Literal["not logged in", "havent fetched"]:
+        if self._account is None:
+            return "not logged in"
+
+        return [
+            UUID(item_id)
+            for item_id in self._account.private_info.item_ids
+        ]
+
+    def my_item_invitation_ids(
+        self,
+    ) -> list[UUID] | Literal["not logged in", "havent fetched"]:
+        if self._account is None:
+            return "not logged in"
+
+        return [
+            UUID(invitation.id)
+            for invitation in self._account.invitation_metadata
+        ]
+
+    def item_name(
+        self,
+        id: UUID,
+    ) -> str | Literal["not logged in", "havent fetched", "doesnt exist"]:
+        if self._account is None:
+            return "not logged in"
+
+        sid = str(id)
+
+        for item in self._account.item_metadata:
+            if item.id == sid:
+                return item.name
+
+        for invitation in self._account.invitation_metadata:
+            if invitation.id == sid:
+                return invitation.name
+
+        return "doesnt exist"
+
+    def item_encryption_method(
+        self,
+        id: UUID,
+    ) -> str | Literal["not logged in", "havent fetched", "doesnt exist"]:
+        if self._account is None:
+            return "not logged in"
+
+        sid = str(id)
+
+        for item in self._account.item_metadata:
+            if item.id == sid:
+                return item.encryption_method
+
+        for invitation in self._account.invitation_metadata:
+            if invitation.id == sid:
+                return invitation.encryption_method
+
+        return "doesnt exist"
+
+    def item_size(
+        self,
+        id: UUID,
+    ) -> int | Literal["not logged in", "havent fetched", "doesnt exist"]:
+        if self._account is None:
+            return "not logged in"
+
+        sid = str(id)
+
+        for item in self._account.item_metadata:
+            if item.id == sid:
+                return getattr(item, "size", 0)
+
+        for invitation in self._account.invitation_metadata:
+            if invitation.id == sid:
+                return getattr(invitation, "size", 0)
+
+        return "doesnt exist"
+
+    def item_is_locked(
+        self,
+        id: UUID,
+    ) -> bool | Literal[
+        "not logged in",
+        "havent fetched",
+        "doesnt exist",
+        "corrupt",
+    ]:
+        if self._account is None:
+            return "not logged in"
+
+        method = self.item_encryption_method(id)
+
+        if method == "doesnt exist":
+            return "doesnt exist"
+
+        if method == "havent fetched":
+            return "havent fetched"
+
+        if method == "not logged in":
+            return "not logged in"
+
+        if method == "plain":
+            return False
+
+        return True
+
+    def read_item(
+        self,
+        id: UUID,
+    ) -> bytes | Literal[
+        "wait",
+        "not connected",
+        "not logged in",
+        "havent fetched",
+        "doesnt exist",
+        "locked",
+        "corrupt",
+        "unknown server error",
+    ]:
+        if self._account is None:
+            return "not logged in"
+
+        if self._task is not None:
+            if self._task.name != "read_item":
+                return "wait"
+
+            if self._task.is_pending():
+                return "wait"
+
+            result = self._task.get()
+            self._task = None
+
+            return result
+
+        def run() -> bytes | Literal[
+            "not connected",
+            "doesnt exist",
+            "locked",
+            "corrupt",
+            "unknown server error",
+        ]:
+            sid = str(id)
+
+            auth_key: str | None = None
+
+            for item in self._account.item_metadata:
+                if item.id == sid:
+                    auth_key = item.auth_key
+                    break
+
+            if auth_key is None:
+                for invitation in self._account.invitation_metadata:
+                    if invitation.id == sid:
+                        auth_key = invitation.auth_key
+                        break
+
+            if auth_key is None:
+                return "doesnt exist"
+
+            response = self._request(ItemRequest(
+                id=sid,
+                auth_key=auth_key,
+            ))
+
+            if response == "not connected":
+                return "not connected"
+
+            if response["type"] != "ItemResponse":
+                return "unknown server error"
+
+            if not response["is_success"]:
+                if response["wrong_key"]:
+                    return "corrupt"
+
+                return "unknown server error"
+
+            contents = str_to_bytes(response["contents"])
+
+            private_keys = [self._account.private_key]
+            for rk_info in response["release_key_contents"]:
+                try:
+                    private_keys.append(PrivateKey(rk_info))
+                except Exception:
+                    continue
+
+            # Iteratively decrypt the layer by layer
+            while True:
+                content_str = contents.decode("utf-8", errors="ignore")
+                if ":" not in content_str:
+                    break
+
+                prefix, b64_payload = content_str.rsplit(":", 1)
+                try:
+                    encrypted_bytes = str_to_bytes(b64_payload)
+                except Exception:
+                    break
+
+                decrypted = None
+                for pk in private_keys:
+                    try:
+                        decrypted = decrypt(pk, encrypted_bytes)
+                        break
+                    except Exception:
+                        continue
+
+                if decrypted is None:
+                    return "locked"
+
+                contents = decrypted
+
+            return contents
+
+        self._task = Task("read_item", run)
+
+        return "wait"
+
+    def release_item(
+        self,
+        id: UUID,
+        until: datetime,
+    ) -> Literal[
+        "wait",
+        "done",
+        "not logged in",
+        "havent fetched",
+        "doesnt exist",
+        "corrupt",
+        "havent joined",
+        "unknown server error",
+    ]:
+        if self._account is None:
+            return "not logged in"
+
+        if self._task is not None:
+            if self._task.name != "release_item":
+                return "wait"
+
+            if self._task.is_pending():
+                return "wait"
+
+            result = self._task.get()
+            self._task = None
+
+            return result
+
+        def run() -> Literal[
+            "done",
+            "doesnt exist",
+            "corrupt",
+            "havent joined",
+            "unknown server error",
+        ]:
+            sid = str(id)
+
+            item: _ItemMetadata | None = None
+
+            for current_item in self._account.item_metadata:
+                if current_item.id == sid:
+                    item = current_item
+                    break
+
+            if item is None:
+                return "havent joined"
+
+            response = self._request(ReleaseItemRequest(
+                id=sid,
+                auth_key=item.auth_key,
+                info=str(self._account.private_key),
+                expires=until.isoformat(),
+            ))
+
+            if response == "not connected":
+                return "unknown server error"
+
+            if response["type"] != "ReleaseItemResponse":
+                return "unknown server error"
+
+            if not response["is_success"]:
+                if response["wrong_key"]:
+                    return "corrupt"
+
+                return "unknown server error"
+
+            item.is_released = True
+            item.released_until = until
+
+            return "done"
+
+        self._task = Task("release_item", run)
+
+        return "wait"
+
+    def join_item(
+        self,
+        id: UUID,
+    ) -> Literal[
+        "wait",
+        "done",
+        "not logged in",
+        "havent fetched",
+        "doesnt exist",
+        "corrupt",
+        "unknown server error",
+    ]:
+        if self._account is None:
+            return "not logged in"
+
+        sid = str(id)
+
+        invitation: _InvitationMetadata | None = None
+
+        for current_invitation in self._account.invitation_metadata:
+            if current_invitation.id == sid:
+                invitation = current_invitation
+                break
+
+        if invitation is None:
+            return "doesnt exist"
+
+        self._account.private_info.item_ids.append(invitation.id)
+        self._account.private_info.item_auth_keys.append(invitation.auth_key)
+        self._account.private_info.item_names.append(invitation.name)
+        self._account.private_info.item_encryption_methods.append(invitation.encryption_method)
+        self._account.private_info.item_sizes.append(invitation.size)
+
+        self._account.item_metadata.append(_ItemMetadata(
+            invitation.id,
+            invitation.name,
+            invitation.auth_key,
+            invitation.encryption_method,
+            invitation.size,
+        ))
+
+        self._account.invitation_metadata.remove(invitation)
+
+        response = self._request(PushRequest(
+            private_info=_serialize_private_info(
+                self._account.private_info,
+                self._account.public_key,
+            ),
+            messages=[],
+        ))
+
+        if response == "not connected":
+            return "unknown server error"
+
+        return "done"
+
+    def reject_item(
+        self,
+        id: UUID,
+    ) -> Literal[
+        "wait",
+        "done",
+        "not logged in",
+        "havent fetched",
+        "doesnt exist",
+        "corrupt",
+        "unknown server error",
+    ]:
+        if self._account is None:
+            return "not logged in"
+
+        sid = str(id)
+
+        invitation: _InvitationMetadata | None = None
+
+        for current_invitation in self._account.invitation_metadata:
+            if current_invitation.id == sid:
+                invitation = current_invitation
+                break
+
+        if invitation is None:
+            return "doesnt exist"
+
+        self._account.invitation_metadata.remove(invitation)
+
+        return "done"
+
+    def has_released_item(
+        self,
+        id: UUID,
+    ) -> bool | Literal[
+        "not logged in",
+        "havent fetched",
+        "doesnt exist",
+        "corrupt",
+    ]:
+        if self._account is None:
+            return "not logged in"
+
+        sid = str(id)
+
+        for item in self._account.item_metadata:
+            if item.id == sid:
+                return item.is_released
+
+        return "doesnt exist"
+
+    def released_item_timelimit(
+        self,
+        id: UUID,
+    ) -> datetime | Literal[
+        "not logged in",
+        "havent fetched",
+        "doesnt exist",
+        "corrupt",
+        "havent released",
+    ]:
+        if self._account is None:
+            return "not logged in"
+
+        sid = str(id)
+
+        for item in self._account.item_metadata:
+            if item.id == sid:
+                if not item.is_released:
+                    return "havent released"
+
+                if item.released_until is None:
+                    return "havent released"
+
+                return item.released_until
+
+        return "doesnt exist"
+
+    def create_item(
+        self,
+        name: str,
+        data: bytes,
+    ) -> Literal[
+        "wait",
+        "done",
+        "not logged in",
+        "corrupt",
+        "not connected",
+        "unknown server error",
+    ]:
+        if self._account is None:
+            return "not logged in"
+
+        if self._task is not None:
+            if self._task.name != "create_item":
+                return "wait"
+
+            if self._task.is_pending():
+                return "wait"
+
+            result = self._task.get()
+            self._task = None
+
+            return result
+
+        def run() -> Literal[
+            "done",
+            "not connected",
+            "unknown server error",
+        ]:
+            auth_key = hash_string(name + str(datetime.now().timestamp()))
+
+            response = self._request(CreateItemRequest(
+                contents=bytes_to_str(data),
+                auth_key=auth_key,
+            ))
+
+            if response == "not connected":
+                return "not connected"
+
+            if response["type"] != "CreateItemResponse":
+                return "unknown server error"
+
+            if not response["is_success"]:
+                return "unknown server error"
+
+            item_id = response["id"]
+
+            self._account.private_info.item_ids.append(item_id)
+            self._account.private_info.item_auth_keys.append(auth_key)
+            self._account.private_info.item_names.append(name)
+            self._account.private_info.item_encryption_methods.append("plain")
+            self._account.private_info.item_sizes.append(len(data))
+
+            self._account.item_metadata.append(_ItemMetadata(
+                item_id,
+                name,
+                auth_key,
+                "plain",
+                len(data),
+            ))
+
+            push_response = self._request(PushRequest(
+                private_info=_serialize_private_info(
+                    self._account.private_info,
+                    self._account.public_key,
+                ),
+                messages=[],
+            ))
+
+            if push_response == "not connected":
+                return "not connected"
+
+            return "done"
+
+        self._task = Task("create_item", run)
+
+        return "wait"
+
+    def invite_user_to_item(
+        self,
+        user_email: str,
+        item_id: UUID,
+    ) -> Literal[
+        "wait",
+        "done",
+        "not logged in",
+        "corrupt",
+        "not connected",
+        "item doesnt exist",
+        "user doesnt exist",
+        "unknown server error",
+    ]:
+        if self._account is None:
+            return "not logged in"
+
+        if self._global_info is None:
+            return "unknown server error"
+
+        if self._global_info.global_user_emails is None:
+            return "unknown server error"
+
+        if self._global_info.global_user_pub_keys is None:
+            return "unknown server error"
+
+        sid = str(item_id)
+
+        item: _ItemMetadata | None = None
+
+        for current_item in self._account.item_metadata:
+            if current_item.id == sid:
+                item = current_item
+                break
+
+        if item is None:
+            return "item doesnt exist"
+
+        if user_email not in self._global_info.global_user_emails:
+            return "user doesnt exist"
+
+        index = self._global_info.global_user_emails.index(user_email)
+
+        target_key = self._global_info.global_user_pub_keys[index]
+
+        # Request the server to encrypt the item with the target user's public key
+        prefix = user_email + ":"
+        encrypt_response = self._request(EncryptItemRequest(
+            id=sid,
+            auth_key=item.auth_key,
+            public_key=target_key,
+            prefix=prefix,
+        ))
+
+        if encrypt_response == "not connected":
+            return "not connected"
+
+        if encrypt_response["type"] != "EncryptItemResponse":
+            return "unknown server error"
+
+        if not encrypt_response["is_success"]:
+            return "unknown server error"
+
+        # Update metadata locally
+        item.encryption_method = "encrypted"
+        # Overhead: prefix length + original size + 64 bytes (ChaCha20Poly1305 encryption overhead)
+        item.size = len(prefix) + item.size + 64
+
+        try:
+            priv_idx = self._account.private_info.item_ids.index(sid)
+            self._account.private_info.item_encryption_methods[priv_idx] = "encrypted"
+            self._account.private_info.item_sizes[priv_idx] = item.size
+        except Exception:
+            pass
+
+        push_response = self._request(PushRequest(
+            private_info=_serialize_private_info(
+                self._account.private_info,
+                self._account.public_key,
+            ),
+            messages=[],
+        ))
+
+        if push_response == "not connected":
+            return "not connected"
+
+        payload = json.dumps({
+            "item_id": item.id,
+            "item_name": item.name,
+            "item_auth_key": item.auth_key,
+            "item_encryption_method": item.encryption_method,
+            "item_size": item.size,
+        }).encode()
+
+        encrypted_payload = encrypt(
+            target_key,
+            payload,
+        )
+
+        response = self._request(SendRequest(
+            target_email=user_email,
+            content=bytes_to_str(encrypted_payload),
+        ))
+
+        if response == "not connected":
+            return "not connected"
+
+        if response["type"] != "SendResponse":
+            return "unknown server error"
+
+        if not response["is_success"]:
+            if response["user_doesnt_exist"]:
+                return "user doesnt exist"
+
+            return "unknown server error"
+
+        return "done"
+
+    def delete_item(
+        self,
+        id: UUID,
+    ) -> Literal[
+        "wait",
+        "done",
+        "not logged in",
+        "doesnt exist",
+        "corrupt",
+        "not connected",
+        "unknown server error",
+    ]:
+        if self._account is None:
+            return "not logged in"
+
+        sid = str(id)
+
+        index: int | None = None
+
+        for i, item_id in enumerate(self._account.private_info.item_ids):
+            if item_id == sid:
+                index = i
+                break
+
+        if index is None:
+            return "doesnt exist"
+
+        del self._account.private_info.item_ids[index]
+        del self._account.private_info.item_auth_keys[index]
+        if index < len(self._account.private_info.item_names):
+            del self._account.private_info.item_names[index]
+        if index < len(self._account.private_info.item_encryption_methods):
+            del self._account.private_info.item_encryption_methods[index]
+        if index < len(self._account.private_info.item_sizes):
+            del self._account.private_info.item_sizes[index]
+
+        for item in self._account.item_metadata:
+            if item.id == sid:
+                self._account.item_metadata.remove(item)
+                break
+
+        response = self._request(PushRequest(
+            private_info=_serialize_private_info(
+                self._account.private_info,
+                self._account.public_key,
+            ),
+            messages=[],
+        ))
+
+        if response == "not connected":
+            return "not connected"
+
+        return "done"
+
+    def leave_and_release_item(
+        self,
+        id: UUID,
+    ) -> Literal[
+        "wait",
+        "done",
+        "not logged in",
+        "doesnt exist",
+        "corrupt",
+        "not connected",
+        "unknown server error",
+    ]:
+        release_result = self.release_item(
+            id,
+            datetime.max,
+        )
+
+        if release_result == "wait":
+            return "wait"
+
+        if release_result != "done":
+            if release_result == "havent joined":
+                return "doesnt exist"
+
+            return release_result
+
+        return self.delete_item(id)

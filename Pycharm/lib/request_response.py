@@ -18,6 +18,8 @@ class SignupRequest:
     private_info: str
     # the public key of the user used to send them encrypted messages.
     public_key: PublicKey
+    # A description of the user.
+    description: str = ""
     type: Literal["SignupRequest"] = "SignupRequest"
 
 

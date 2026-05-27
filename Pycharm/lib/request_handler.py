@@ -13,17 +13,19 @@ from lib.encode_default import str_to_bytes, bytes_to_str
 class Client:
     conn: ServerConnection
     logged_into_email: Email | None
+    is_handling: bool
 
     def __init__(self, conn: ServerConnection):
         self.conn = conn
         self.logged_into_email = None
+        self.is_handling = False
 
 
 def handle_next_request(db: Database, client: Client):
     try:
         request = client.conn.recv()
-        while request is None:
-            request = client.conn.recv()
+        if request is None:
+            return
 
         if not isinstance(request, dict):
             return
@@ -32,39 +34,63 @@ def handle_next_request(db: Database, client: Client):
         if req_type is None:
             return
 
-        if req_type == "SignupRequest":
-            handle_signup_request(db, client, SignupRequest(**request))
+        try:
+            if req_type == "SignupRequest":
+                handle_signup_request(db, client, SignupRequest(**request))
 
-        elif req_type == "LoginRequest":
-            handle_login_request(db, client, LoginRequest(**request))
+            elif req_type == "LoginRequest":
+                handle_login_request(db, client, LoginRequest(**request))
 
-        elif req_type == "FetchRequest":
-            handle_fetch_request(db, client, FetchRequest(**request))
+            elif req_type == "FetchRequest":
+                handle_fetch_request(db, client, FetchRequest(**request))
 
-        elif req_type == "PushRequest":
-            handle_push_request(db, client, PushRequest(**request))
+            elif req_type == "PushRequest":
+                handle_push_request(db, client, PushRequest(**request))
 
-        elif req_type == "SendRequest":
-            handle_send_request(db, client, SendRequest(**request))
+            elif req_type == "SendRequest":
+                handle_send_request(db, client, SendRequest(**request))
 
-        elif req_type == "ItemRequest":
-            handle_item_request(db, client, ItemRequest(**request))
+            elif req_type == "ItemRequest":
+                handle_item_request(db, client, ItemRequest(**request))
 
-        elif req_type == "CreateItemRequest":
-            handle_create_item_request(db, client, CreateItemRequest(**request))
+            elif req_type == "CreateItemRequest":
+                handle_create_item_request(db, client, CreateItemRequest(**request))
 
-        elif req_type == "EncryptItemRequest":
-            handle_encrypt_item_request(db, client, EncryptItemRequest(**request))
+            elif req_type == "EncryptItemRequest":
+                handle_encrypt_item_request(db, client, EncryptItemRequest(**request))
 
-        elif req_type == "ReleaseItemRequest":
-            handle_release_item_request(db, client, ReleaseItemRequest(**request))
+            elif req_type == "ReleaseItemRequest":
+                handle_release_item_request(db, client, ReleaseItemRequest(**request))
+        except Exception as handler_err:
+            print(f"Error handling {req_type}: {handler_err}")
+            if req_type == "SignupRequest":
+                client.conn.send(SignupResponse(is_success=False, email_is_taken=False))
+            elif req_type == "LoginRequest":
+                client.conn.send(LoginResponse(is_success=False, incorrect_password=False, user_doesnt_exist=False))
+            elif req_type == "FetchRequest":
+                client.conn.send(FetchResponse(is_success=False, not_logged_in=False, messages=[], private_info="", user_descriptions=[], user_emails=[], user_public_keys=[]))
+            elif req_type == "PushRequest":
+                client.conn.send(PushResponse(is_success=False, not_logged_in=False))
+            elif req_type == "SendRequest":
+                client.conn.send(SendResponse(is_success=False, invalid_email=False, user_doesnt_exist=False, not_logged_in=False))
+            elif req_type == "ItemRequest":
+                client.conn.send(ItemResponse(is_success=False, wrong_key=False, contents="", release_key_contents=[]))
+            elif req_type == "CreateItemRequest":
+                client.conn.send(CreateItemResponse(is_success=False, id=""))
+            elif req_type == "EncryptItemRequest":
+                client.conn.send(EncryptItemResponse(is_success=False, wrong_key=False))
+            elif req_type == "ReleaseItemRequest":
+                client.conn.send(ReleaseItemResponse(is_success=False, wrong_key=False))
 
     except Exception as e:
         # Prevent silent thread death → avoids "stalls"
         print("SERVER HANDLER CRASH:", e)
+    finally:
+        client.is_handling = False
 
 
 def handle_signup_request(db: Database, client: Client, request: SignupRequest):
+    print("signup fn")
     try:
         email = Email(request.email)
     except InvalidEmailError:
@@ -81,7 +107,7 @@ def handle_signup_request(db: Database, client: Client, request: SignupRequest):
             auth_key=hash_string(request.auth_key),
             private_info=request.private_info,
             public_key=request.public_key,
-            description="",
+            description=request.description,
             messages=[]
         ),
         should_already_exist=False
@@ -168,7 +194,7 @@ def handle_push_request(db: Database, client: Client, request: PushRequest):
         client.conn.send(PushResponse(False, False))
         return
 
-    db_user.private_info = str_to_bytes(request.private_info)
+    db_user.private_info = request.private_info
     db_user.messages = request.messages
 
     db.insert_user(client.logged_into_email, db_user, should_already_exist=True)
@@ -262,17 +288,9 @@ def handle_encrypt_item_request(db: Database, client: Client, request: EncryptIt
         client.conn.send(EncryptItemResponse(False, False))
         return
 
-    prefix = request.prefix.encode("utf-8")
+    encrypted = encrypt(request.public_key, str_to_bytes(db_item.contents))
 
-    raw = db_item.contents
-    if isinstance(raw, str):
-        raw_bytes = str_to_bytes(raw)
-    else:
-        raw_bytes = raw
-
-    encrypted = encrypt(request.public_key, raw_bytes)
-
-    db_item.contents = prefix + encrypted
+    db_item.contents = request.prefix + bytes_to_str(encrypted)
     db.insert_item(request.id, db_item, should_already_exist=True)
 
     client.conn.send(EncryptItemResponse(True, False))
