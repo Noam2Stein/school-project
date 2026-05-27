@@ -18,44 +18,41 @@ from lib.task import Task
 from lib.email import Email
 
 
-class PrivateInformation:
+class _PrivateInformation:
     _private_key: PrivateKey
     _item_ids: list[str]
     _item_names: list[str]
+    _item_auth_keys: list[str]
+
+
+class _AccountInfo:
+    email: Email
+    auth_key: str
+    private_info: _PrivateInformation
+
+
+class GlobalInfo:
+    global_user_emails: list[str] | None
+    global_user_pub_keys: list[PublicKey] | None
+    global_user_descriptions: list[str] | None
 
 
 class ClientBackend:
     _task: Task | None
-    _task_name: str | None
-
     _conn: ClientConnection | None
-    _global_user_emails: list[str] | None
-    _global_user_pub_keys: list[PublicKey] | None
-    _global_user_descriptions: list[str] | None
-
-    _email: Email | None
-    _auth_key: str | None
-    _private_information: PrivateInformation | None
+    _global_info: GlobalInfo | None
+    _account: _AccountInfo | None
 
     def __init__(self):
         self._task = None
-        self._task_name = None
-
         self._conn = None
-        self._global_user_emails = None
-        self._global_user_descriptions = None
-        self._global_user_pub_keys = None
-
-        self._email = None
-        self._auth_key = None
-        self._private_information = None
+        self._global_info = None
+        self._account = None
 
         # fetch information from the server in the background. This needs to be called
         # when you want to refresh information. This is only `done` for a single call. After
         # the first `done` call, this function will try to fetch again.
         def fetch_from_server(self) -> Literal["wait", "not connected", "done", "unknown server error"]:
-            // YOU CAN ONLY MODIFY FROM THIS LINE
-
             if self._task_name is None:
                 self._task = Task()
 

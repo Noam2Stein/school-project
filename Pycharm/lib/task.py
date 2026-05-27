@@ -3,7 +3,8 @@ from typing import Callable, Any
 
 
 class Task:
-    def __init__(self, fn: Callable, *args: Any):
+    def __init__(self, name: str, fn: Callable, *args: Any):
+        self.name = name
         self._result = None
         self._done = False
 
