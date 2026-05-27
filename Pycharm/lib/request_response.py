@@ -26,11 +26,7 @@ class SignupRequest:
 # The server's response to `SignupRequest`.
 @dataclass
 class SignupResponse:
-    # Was the signup successful?
-    is_success: bool
-    # `true` if the email is already taken. It's possible to have a failure where
-    # this is false, where the cause is unknown.
-    email_is_taken: bool
+    error: str | None
     type: Literal["SignupResponse"] = "SignupResponse"
 
 
@@ -49,12 +45,7 @@ class LoginRequest:
 # The server's response to `LoginRequest`.
 @dataclass
 class LoginResponse:
-    # Was the login successful?
-    is_success: bool
-    # `true` is the request failed because of an incorrect password.
-    incorrect_password: bool
-    # `true` if the user doesn't exist.
-    user_doesnt_exist: bool
+    error: str | None
     type: Literal["LoginResponse"] = "LoginResponse"
 
 
@@ -68,10 +59,7 @@ class FetchRequest:
 # The server's response to `FetchRequest`.
 @dataclass
 class FetchResponse:
-    # is it a success...
-    is_success: bool
-    # did the request fail because the client isn't logged in.
-    not_logged_in: bool
+    error: str | None
     # The user's private information in an encrypted form where the format is
     # specified by the client. This would be `bytes` but they are not supported by json.
     private_info: str
@@ -106,10 +94,7 @@ class PushRequest:
 # The server's response to `PushRequest`.
 @dataclass
 class PushResponse:
-    # Was it successful. If not, it is important to send again.
-    is_success: bool
-    # did the request fail because the client isn't logged in.
-    not_logged_in: bool
+    error: str | None
     type: Literal["PushResponse"] = "PushResponse"
 
 
@@ -129,11 +114,7 @@ class SendRequest:
 # The server's response to `SendRequest`.
 @dataclass
 class SendResponse:
-    # Was it successful. If not, its important to send again.
-    is_success: bool
-    invalid_email: bool
-    user_doesnt_exist: bool
-    not_logged_in: bool
+    error: str | None
     type: Literal["SendResponse"] = "SendResponse"
 
 
@@ -153,11 +134,7 @@ class ItemRequest:
 # The server's response to `ItemRequest`.
 @dataclass
 class ItemResponse:
-    # Is it successful.
-    is_success: bool
-    # Did the request fail because authentication fail? If not, the error is
-    # unknown.
-    wrong_key: bool
+    error: str | None
     # The contents of the item in an unknown encrypted format thats specified by
     # client code. This may be megabytes long.
     # This would be `bytes` but they are not supported by json.
@@ -183,8 +160,7 @@ class CreateItemRequest:
 # The server's response to `CreateItemRequest`.
 @dataclass
 class CreateItemResponse:
-    # Is it successful.
-    is_success: bool
+    error: str | None
     # The ID of the item later used in `ItemRequest`.
     # This would be `bytes` but they are not supported by json.
     id: str
@@ -215,12 +191,7 @@ class EncryptItemRequest:
 # The server's response to `EncryptItemRequest`.
 @dataclass
 class EncryptItemResponse:
-    # Is it successful.
-    is_success: bool
-    # Did it fail because the `auth_key` is wrong. If this is false and
-    # `is_success` is false, there was an unknown error and the client should
-    # try again.
-    wrong_key: bool
+    error: str | None
     type: Literal["EncryptItemResponse"] = "EncryptItemResponse"
 
 
@@ -248,12 +219,7 @@ class ReleaseItemRequest:
 # The server's response to `ReleaseItemRequest`.
 @dataclass
 class ReleaseItemResponse:
-    # Is it successful.
-    is_success: bool
-    # Did it fail because the `auth_key` is wrong. If this is false and
-    # `is_success` is false, there was an unknown error and the client should
-    # try again.
-    wrong_key: bool
+    error: str | None
     type: Literal["ReleaseItemResponse"] = "ReleaseItemResponse"
 
 

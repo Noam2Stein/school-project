@@ -218,10 +218,7 @@ class ClientBackend:
         if self._account is None:
             return "unknown server error"
 
-        if self._task is not None:
-            if self._task.name != "fetch":
-                return "wait"
-
+        if self._task is not None and self._task.name == "fetch":
             if self._task.is_pending():
                 return "wait"
 
@@ -237,14 +234,8 @@ class ClientBackend:
         ]:
             response = self._request(FetchRequest())
 
-            if response == "not connected":
-                return "not connected"
-
-            if response["type"] != "FetchResponse":
-                return "unknown server error"
-
-            if not response["is_success"]:
-                return "unknown server error"
+            if response["error"] is not None:
+                return response["error"]
 
             private_info = _deserialize_private_info(
                 response["private_info"],
@@ -352,10 +343,7 @@ class ClientBackend:
         "wrong password",
         "unknown server error",
     ]:
-        if self._task is not None:
-            if self._task.name != "login":
-                return "wait"
-
+        if self._task is not None and self._task.name == "login":
             if self._task.is_pending():
                 return "wait"
 
@@ -377,17 +365,8 @@ class ClientBackend:
                 auth_key=auth_key,
             ))
 
-            if response == "not connected":
-                return "not connected"
-
-            if response["type"] != "LoginResponse":
-                return "unknown server error"
-
-            if not response["is_success"]:
-                if response["incorrect_password"]:
-                    return "wrong password"
-
-                return "unknown server error"
+            if response["error"] is not None:
+                return response["error"]
 
             private_key, public_key = keypair(password)
 
@@ -408,22 +387,20 @@ class ClientBackend:
         "wait",
         "done",
         "already exists",
-        "invalid password",
+        "invalid password (must be atleast 4 characters)",
+        "invalid email syntax",
         "not connected",
         "unknown server error",
     ]:
         if len(password) < 4:
-            return "invalid password"
+            return "invalid password (must be atleast 4 characters)"
 
         try:
             validated_email = Email(email)
         except InvalidEmailError:
-            return "invalid password"
+            return "invalid email syntax"
 
-        if self._task is not None:
-            if self._task.name != "signup":
-                return "wait"
-
+        if self._task is not None and self._task.name == "signup":
             if self._task.is_pending():
                 return "wait"
 
@@ -461,17 +438,8 @@ class ClientBackend:
                 public_key=public_key,
             ))
 
-            if response == "not connected":
-                return "not connected"
-
-            if response["type"] != "SignupResponse":
-                return "unknown server error"
-
-            if not response["is_success"]:
-                if response["email_is_taken"]:
-                    return "already exists"
-
-                return "unknown server error"
+            if response["error"] is not None:
+                return response["error"]
 
             self._account = account
 
@@ -610,10 +578,7 @@ class ClientBackend:
         if self._account is None:
             return "not logged in"
 
-        if self._task is not None:
-            if self._task.name != "read_item":
-                return "wait"
-
+        if self._task is not None and self._task.name == "read_item":
             if self._task.is_pending():
                 return "wait"
 
@@ -652,17 +617,8 @@ class ClientBackend:
                 auth_key=auth_key,
             ))
 
-            if response == "not connected":
-                return "not connected"
-
-            if response["type"] != "ItemResponse":
-                return "unknown server error"
-
-            if not response["is_success"]:
-                if response["wrong_key"]:
-                    return "corrupt"
-
-                return "unknown server error"
+            if response["error"] is not None:
+                return response["error"]
 
             contents = str_to_bytes(response["contents"])
 
@@ -721,10 +677,7 @@ class ClientBackend:
         if self._account is None:
             return "not logged in"
 
-        if self._task is not None:
-            if self._task.name != "release_item":
-                return "wait"
-
+        if self._task is not None and self._task.name == "release_item":
             if self._task.is_pending():
                 return "wait"
 
@@ -759,17 +712,8 @@ class ClientBackend:
                 expires=until.isoformat(),
             ))
 
-            if response == "not connected":
-                return "unknown server error"
-
-            if response["type"] != "ReleaseItemResponse":
-                return "unknown server error"
-
-            if not response["is_success"]:
-                if response["wrong_key"]:
-                    return "corrupt"
-
-                return "unknown server error"
+            if response["error"] is not None:
+                return response["error"]
 
             item.is_released = True
             item.released_until = until
@@ -831,8 +775,8 @@ class ClientBackend:
             messages=[],
         ))
 
-        if response == "not connected":
-            return "unknown server error"
+        if response["error"] is not None:
+            return response["error"]
 
         return "done"
 
@@ -929,10 +873,7 @@ class ClientBackend:
         if self._account is None:
             return "not logged in"
 
-        if self._task is not None:
-            if self._task.name != "create_item":
-                return "wait"
-
+        if self._task is not None and self._task.name == "create_item":
             if self._task.is_pending():
                 return "wait"
 
@@ -953,14 +894,8 @@ class ClientBackend:
                 auth_key=auth_key,
             ))
 
-            if response == "not connected":
-                return "not connected"
-
-            if response["type"] != "CreateItemResponse":
-                return "unknown server error"
-
-            if not response["is_success"]:
-                return "unknown server error"
+            if response["error"] is not None:
+                return response["error"]
 
             item_id = response["id"]
 
@@ -986,8 +921,8 @@ class ClientBackend:
                 messages=[],
             ))
 
-            if push_response == "not connected":
-                return "not connected"
+            if push_response["error"] is not None:
+                return push_response["error"]
 
             return "done"
 
@@ -1049,14 +984,8 @@ class ClientBackend:
             prefix=prefix,
         ))
 
-        if encrypt_response == "not connected":
-            return "not connected"
-
-        if encrypt_response["type"] != "EncryptItemResponse":
-            return "unknown server error"
-
-        if not encrypt_response["is_success"]:
-            return "unknown server error"
+        if encrypt_response["error"] is not None:
+            return encrypt_response["error"]
 
         # Update metadata locally
         item.encryption_method = "encrypted"
@@ -1078,8 +1007,8 @@ class ClientBackend:
             messages=[],
         ))
 
-        if push_response == "not connected":
-            return "not connected"
+        if push_response["error"] is not None:
+            return push_response["error"]
 
         payload = json.dumps({
             "item_id": item.id,
@@ -1099,17 +1028,8 @@ class ClientBackend:
             content=bytes_to_str(encrypted_payload),
         ))
 
-        if response == "not connected":
-            return "not connected"
-
-        if response["type"] != "SendResponse":
-            return "unknown server error"
-
-        if not response["is_success"]:
-            if response["user_doesnt_exist"]:
-                return "user doesnt exist"
-
-            return "unknown server error"
+        if response["error"] is not None:
+            return response["error"]
 
         return "done"
 
@@ -1162,8 +1082,8 @@ class ClientBackend:
             messages=[],
         ))
 
-        if response == "not connected":
-            return "not connected"
+        if response["error"] is not None:
+            return response["error"]
 
         return "done"
 
