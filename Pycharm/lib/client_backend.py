@@ -377,6 +377,88 @@ class ClientBackend:
                 public_key,
             )
 
+            # Immediately fetch and fully load account state
+            fetch_response = self._request(FetchRequest())
+
+            if fetch_response["error"] is not None:
+                return fetch_response["error"]
+
+            private_info = _deserialize_private_info(
+                fetch_response["private_info"],
+                self._account.private_key,
+            )
+
+            if private_info == "corrupt":
+                return "unknown server error"
+
+            self._account.private_info = private_info
+
+            # Rebuild item metadata
+            self._account.item_metadata = []
+
+            for i in range(len(private_info.item_ids)):
+                item_id = private_info.item_ids[i]
+                auth_key = private_info.item_auth_keys[i]
+
+                name = (
+                    private_info.item_names[i]
+                    if i < len(private_info.item_names)
+                    else "unknown"
+                )
+
+                method = (
+                    private_info.item_encryption_methods[i]
+                    if i < len(private_info.item_encryption_methods)
+                    else "plain"
+                )
+
+                size = (
+                    private_info.item_sizes[i]
+                    if i < len(private_info.item_sizes)
+                    else 0
+                )
+
+                self._account.item_metadata.append(_ItemMetadata(
+                    id=item_id,
+                    name=name,
+                    auth_key=auth_key,
+                    encryption_method=method,
+                    size=size,
+                ))
+
+            # Load global info
+            global_info = GlobalInfo()
+            global_info.global_user_emails = fetch_response["user_emails"]
+            global_info.global_user_pub_keys = fetch_response["user_public_keys"]
+            global_info.global_user_descriptions = fetch_response["user_descriptions"]
+
+            self._global_info = global_info
+
+            # Load invitations
+            self._account.invitation_metadata = []
+
+            for message in fetch_response["messages"]:
+                try:
+                    decrypted = decrypt(
+                        self._account.private_key,
+                        str_to_bytes(message),
+                    )
+
+                    loaded = json.loads(decrypted.decode())
+
+                    invitation = _InvitationMetadata(
+                        loaded["item_id"],
+                        loaded["item_name"],
+                        loaded["item_auth_key"],
+                        loaded["item_encryption_method"],
+                        loaded.get("item_size", 0),
+                    )
+
+                    self._account.invitation_metadata.append(invitation)
+
+                except Exception:
+                    continue
+
             return "done"
 
         self._task = Task("login", run)
@@ -461,10 +543,7 @@ class ClientBackend:
         if self._account is None:
             return "not logged in"
 
-        return [
-            UUID(item_id)
-            for item_id in self._account.private_info.item_ids
-        ]
+        return [UUID(item_id) for item_id in self._account.private_info.item_ids]
 
     def my_item_invitation_ids(
         self,
