@@ -239,11 +239,23 @@ def show_item_screen():
                 command=lambda item=item: show_release_item_screen(item)
             ).grid(row=row, column=4, padx=5)
 
-            tk.Button(
-                items_frame,
-                text="Download",
-                command=lambda item=item: show_download_screen(item)
-            ).grid(row=row, column=5, padx=5)
+            is_locked = backend.item_is_locked(item)
+
+            if is_locked is True:
+                tk.Button(
+                    items_frame,
+                    text="Locked",
+                    state="disabled",
+                    disabledforeground="red",
+                    fg="white",
+                    bg="red"
+                ).grid(row=row, column=5, padx=5)
+            else:
+                tk.Button(
+                    items_frame,
+                    text="Download",
+                    command=lambda item=item: show_download_screen(item)
+                ).grid(row=row, column=5, padx=5)
 
             tk.Button(
                 items_frame,
@@ -326,6 +338,11 @@ def show_download_screen(item: Uuid):
 
     current_screen = tk.Frame(root)
     current_screen.pack(fill="both", expand=True)
+
+    if backend.item_is_locked(item):
+        status_label = tk.Label(current_screen, text="This item is locked and cannot be downloaded", fg="red")
+        status_label.pack()
+        return
 
     exit_button = tk.Button(
         current_screen,
