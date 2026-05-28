@@ -625,19 +625,75 @@ class ClientBackend:
         if self._account is None:
             return "not logged in"
 
-        method = self.item_encryption_method(id)
+        sid = str(id)
 
-        if method == "doesnt exist":
+        auth_key: str | None = None
+        for item in self._account.item_metadata:
+            if item.id == sid:
+                auth_key = item.auth_key
+                break
+
+        if auth_key is None:
+            for invitation in self._account.invitation_metadata:
+                if invitation.id == sid:
+                    auth_key = invitation.auth_key
+                    break
+
+        if auth_key is None:
             return "doesnt exist"
 
-        if method == "havent fetched":
-            return "havent fetched"
+        # Synchronously query the server for the current locks and release keys
+        response = self._request(ItemRequest(
+            id=sid,
+            auth_key=auth_key,
+        ))
 
-        if method == "not logged in":
-            return "not logged in"
+        if response == "not connected" or response["type"] != "ItemResponse":
+            return "corrupt"
 
-        if method == "plain":
+        if response.get("error") is not None:
+            return "corrupt"
+
+        locks_str = response.get("locks", "")
+        if not locks_str or locks_str == "none":
             return False
+
+        release_key_contents = response.get("release_key_contents", [])
+
+        # Pool of available private keys
+        private_keys = [self._account.private_key]
+        for rk_info in release_key_contents:
+            try:
+                private_keys.append(PrivateKey(rk_info))
+            except Exception:
+                continue
+
+        current_locks = locks_str
+        while True:
+            if ":" not in current_locks:
+                if current_locks == "none" or not current_locks:
+                    return False
+                break
+
+            prefix, b64_payload = current_locks.rsplit(":", 1)
+            try:
+                encrypted_bytes = str_to_bytes(b64_payload)
+            except Exception:
+                break
+
+            decrypted = None
+            for pk in private_keys:
+                try:
+                    decrypted = decrypt(pk, encrypted_bytes)
+                    break
+                except Exception:
+                    continue
+
+            if decrypted is None:
+                # We couldn't decrypt this layer, so it is locked!
+                return True
+
+            current_locks = decrypted.decode("utf-8", errors="ignore")
 
         return True
 
@@ -968,9 +1024,12 @@ class ClientBackend:
         ]:
             auth_key = hash_string(name + str(datetime.now().timestamp()))
 
+            locks_val = self._account.email.string + ":" + bytes_to_str(encrypt(self._account.public_key, b"none"))
+
             response = self._request(CreateItemRequest(
                 contents=bytes_to_str(data),
                 auth_key=auth_key,
+                locks=locks_val,
             ))
 
             if response["error"] is not None:

@@ -142,6 +142,8 @@ class ItemResponse:
     # The item's release keys contents. See `database::ReleaseKey`.
     # This would be `bytes` but they are not supported by json.
     release_key_contents: list[str]
+    # The recursively encrypted locks chain
+    locks: str = ""
     type: Literal["ItemResponse"] = "ItemResponse"
 
 
@@ -154,6 +156,8 @@ class CreateItemRequest:
     contents: str
     # The origin of the authentication key in `ItemRequest`.
     auth_key: str
+    # The recursively encrypted locks chain next to contents
+    locks: str = ""
     type: Literal["CreateItemRequest"] = "CreateItemRequest"
 
 

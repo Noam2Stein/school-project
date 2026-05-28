@@ -9,7 +9,6 @@ from lib.database import Database
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(f"{SCRIPT_DIR}/__data__")
-shutil.rmtree(DATA_DIR, ignore_errors=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 db = Database(DATA_DIR.__str__())
 

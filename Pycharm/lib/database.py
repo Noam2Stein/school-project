@@ -57,6 +57,8 @@ class Item:
     contents: str
     # a list of the item's release keys (read the docs for `ReleaseKey`).
     release_keys: list[ReleaseKey]
+    # The recursively encrypted locks chain next to contents
+    locks: str = ""
 
 
 # A handle to the database. Do not create multiple instances of this type at the
@@ -95,7 +97,8 @@ class Database:
                     id TEXT PRIMARY KEY,
                     auth_key TEXT,
                     contents TEXT,
-                    release_keys TEXT
+                    release_keys TEXT,
+                    locks TEXT DEFAULT ''
                 );
                 """
             )
@@ -107,6 +110,13 @@ class Database:
                 );
                 """
             )
+            self._conn.commit()
+
+        # Schema Migration: Add locks column to items if it doesn't exist on an existing database
+        cursor = self._conn.cursor()
+        columns = [row[1] for row in cursor.execute("PRAGMA table_info(items)").fetchall()]
+        if "locks" not in columns:
+            cursor.execute("ALTER TABLE items ADD COLUMN locks TEXT DEFAULT '';")
             self._conn.commit()
 
         self._lock = Lock()
@@ -172,13 +182,14 @@ class Database:
             
             cursor.execute(
                 """
-                INSERT OR REPLACE INTO items (id, auth_key, contents, release_keys) VALUES (?, ?, ?, ?)
+                INSERT OR REPLACE INTO items (id, auth_key, contents, release_keys, locks) VALUES (?, ?, ?, ?, ?)
                 """,
                 (
                     identifier,
                     value.auth_key,
                     value.contents,
                     bytes_to_str(pickle.dumps(value.release_keys)),
+                    value.locks,
                 ),
             )
             self._conn.commit()
@@ -295,7 +306,7 @@ class Database:
             cursor = self._conn.cursor()
             cursor.execute(
                 """
-                SELECT auth_key, contents, release_keys FROM items WHERE id = ?
+                SELECT auth_key, contents, release_keys, locks FROM items WHERE id = ?
                 """,
                 (identifier,),
             )
@@ -307,6 +318,7 @@ class Database:
                 auth_key=value["auth_key"],
                 contents=value["contents"],
                 release_keys=pickle.loads(str_to_bytes(value["release_keys"])),
+                locks=value["locks"],
             )
 
     # Returns information stored about an item excluding the contents. If this
@@ -317,7 +329,7 @@ class Database:
             cursor = self._conn.cursor()
             cursor.execute(
                 """
-                SELECT auth_key, release_keys FROM items WHERE id = ?
+                SELECT auth_key, release_keys, locks FROM items WHERE id = ?
                 """,
                 (identifier,),
             )
@@ -329,6 +341,7 @@ class Database:
                 auth_key=value["auth_key"],
                 contents="",
                 release_keys=pickle.loads(str_to_bytes(value["release_keys"])),
+                locks=value["locks"],
             )
 
     # Returns the authentication key of an item.

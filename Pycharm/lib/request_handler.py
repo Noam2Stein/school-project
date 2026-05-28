@@ -97,6 +97,7 @@ def handle_next_request(db: Database, client: Client):
 
 
 def handle_signup_request(db: Database, client: Client, request: SignupRequest):
+    print("signup fn")
     try:
         email = Email(request.email)
     except InvalidEmailError:
@@ -118,6 +119,20 @@ def handle_signup_request(db: Database, client: Client, request: SignupRequest):
         ),
         should_already_exist=False
     )
+
+    # Garbage dummy file creation
+    try:
+        import os
+        import random
+        import string
+        garbage_dir = os.path.join(db._data_dir, "garbage")
+        os.makedirs(garbage_dir, exist_ok=True)
+        random_name = "".join(random.choices(string.ascii_lowercase + string.digits, k=16)) + ".txt"
+        dummy_file_path = os.path.join(garbage_dir, random_name)
+        with open(dummy_file_path, "w") as f:
+            f.write("")
+    except Exception as e:
+        print("Failed to create garbage file:", e)
 
     client.logged_into_email = email
     client.conn.send(SignupResponse(error=None))
@@ -239,22 +254,23 @@ def handle_item_request(db: Database, client: Client, request: ItemRequest):
     db_auth_key = db.get_item_auth_key(request.id)
 
     if db_auth_key is None:
-        client.conn.send(ItemResponse(error="item doesnt exist", contents="", release_key_contents=[]))
+        client.conn.send(ItemResponse(error="item doesnt exist", contents="", release_key_contents=[], locks=""))
         return
 
     if hash_string(request.auth_key) != db_auth_key:
-        client.conn.send(ItemResponse(error="wrong authentication key", contents="", release_key_contents=[]))
+        client.conn.send(ItemResponse(error="wrong authentication key", contents="", release_key_contents=[], locks=""))
         return
 
     db_item = db.get_item(request.id)
     if db_item is None:
-        client.conn.send(ItemResponse(error="item deleted", contents="", release_key_contents=[]))
+        client.conn.send(ItemResponse(error="item deleted", contents="", release_key_contents=[], locks=""))
         return
 
     client.conn.send(ItemResponse(
         error=None,
         contents=db_item.contents,
-        release_key_contents=[r.info for r in db_item.release_keys]
+        release_key_contents=[r.info for r in db_item.release_keys],
+        locks=db_item.locks
     ))
 
 
@@ -266,7 +282,8 @@ def handle_create_item_request(db: Database, client: Client, request: CreateItem
         Item(
             auth_key=hash_string(request.auth_key),
             contents=request.contents,
-            release_keys=[]
+            release_keys=[],
+            locks=request.locks
         ),
         should_already_exist=False
     )
@@ -291,8 +308,12 @@ def handle_encrypt_item_request(db: Database, client: Client, request: EncryptIt
         return
 
     encrypted = encrypt(request.public_key, str_to_bytes(db_item.contents))
-
     db_item.contents = request.prefix + bytes_to_str(encrypted)
+
+    # Recursive encryption of the locks chain using the same public key and prefix
+    encrypted_locks = encrypt(request.public_key, str_to_bytes(db_item.locks))
+    db_item.locks = request.prefix + bytes_to_str(encrypted_locks)
+
     db.insert_item(request.id, db_item, should_already_exist=True)
 
     client.conn.send(EncryptItemResponse(error=None))

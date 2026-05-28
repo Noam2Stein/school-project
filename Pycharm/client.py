@@ -439,7 +439,7 @@ def show_invite_screen(item: Uuid):
                     description = backend.global_user_description(email)
                     email_listbox.insert(
                         tk.END,
-                        f"{email}: {description}"
+                        f"{email} ({description})"
                     )
 
                 status_label.config(text="Select a user to invite")
@@ -461,7 +461,7 @@ def show_invite_screen(item: Uuid):
             status_label.config(text="Select a user to invite")
             return
 
-        selected_email = email_listbox.get(selection[0]).split(":")[0]
+        selected_email = email_listbox.get(selection[0]).split(" (")[0].strip()
 
         def poll_invite():
             status_label.config(
